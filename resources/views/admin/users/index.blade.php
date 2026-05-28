@@ -1,0 +1,17 @@
+@extends('layouts.admin')
+@section('title','Users')
+@section('page-title','Users')
+@section('page-description','Kelola Super Admin, Admin Branch, Staff/Petugas, dan Member. Staff/Member disiapkan untuk mobile/API dan tidak dapat login web admin.')
+@section('page-actions')<a href="{{ route('admin.users.create') }}" class="btn-primary"><x-admin.icon name="plus" class="h-4 w-4" />Create User</a>@endsection
+@section('content')
+<x-admin.filters search-placeholder="Search name, email, or member code">
+    @if(auth()->user()?->isSuperAdmin())<select name="branch_id" class="form-select w-full md:w-56"><option value="">All branches</option>@foreach($branches as $branch)<option value="{{ $branch->id }}" @selected(request('branch_id')==$branch->id)>{{ $branch->name }}</option>@endforeach</select>@endif
+    <select name="role" class="form-select w-full md:w-44"><option value="">All roles</option>@foreach($roles as $role)<option value="{{ $role->id }}" @selected(request('role')==$role->id)>{{ $role->name }}</option>@endforeach</select>
+    <select name="status" class="form-select w-full md:w-40"><option value="">All status</option><option value="active" @selected(request('status')==='active')>Active</option><option value="inactive" @selected(request('status')==='inactive')>Inactive</option></select>
+</x-admin.filters>
+<div class="table-card overflow-x-auto"><table class="modern-table min-w-[1080px]"><thead><tr><th>User</th><th>Branch</th><th>Roles</th><th>Member</th><th>Status</th><th class="text-right">Action</th></tr></thead><tbody>
+@forelse($users as $user)
+<tr><td><div class="flex items-center gap-3"><div class="flex h-11 w-11 items-center justify-center rounded-full bg-[#031632] text-sm font-bold text-white">{{ strtoupper(substr($user->fullname,0,1)) }}</div><div><div class="font-bold">{{ $user->fullname }}</div><div class="text-xs text-[#44474d]">{{ $user->email }}</div></div></div></td><td><div class="font-semibold">{{ $user->branch?->name ?? 'Global' }}</div><div class="font-mono text-xs text-[#75777e]">{{ $user->branch?->code }}</div></td><td><div class="flex flex-wrap gap-1.5">@forelse($user->roles as $role)<x-admin.badge variant="primary">{{ $role->name }}</x-admin.badge>@empty<x-admin.badge>No Role</x-admin.badge>@endforelse</div></td><td><div class="font-mono text-xs font-semibold">{{ $user->member_code }}</div><div class="text-xs text-[#75777e]">{{ $user->profileType?->label ?? '-' }}</div></td><td><x-admin.badge :status="$user->is_active ? 'active' : 'inactive'">{{ $user->is_active ? 'Active' : 'Inactive' }}</x-admin.badge></td><td class="text-right"><x-admin.action-menu><x-admin.action-link :href="route('admin.users.show',$user)" icon="eye">Detail</x-admin.action-link><x-admin.action-link :href="route('admin.users.edit',$user)" icon="pencil-square">Edit</x-admin.action-link><form method="POST" action="{{ route('admin.users.toggle-status',$user) }}">@csrf @method('PATCH')<x-admin.action-button icon="check-circle">Toggle Status</x-admin.action-button></form><form method="POST" action="{{ route('admin.users.destroy',$user) }}" class="js-delete-form" data-delete-label="{{ $user->fullname }}">@csrf @method('DELETE')<x-admin.action-button icon="trash" danger>Delete</x-admin.action-button></form></x-admin.action-menu></td></tr>
+@empty<tr><td colspan="6"><x-admin.empty-state title="No users found" description="Try changing filters or create a new user." icon="users" /></td></tr>@endforelse
+</tbody></table></div><x-admin.pagination :paginator="$users" />
+@endsection

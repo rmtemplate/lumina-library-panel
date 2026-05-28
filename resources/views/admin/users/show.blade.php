@@ -1,0 +1,11 @@
+@extends('layouts.admin')
+@section('title','User Detail')
+@section('page-title',$user->fullname)
+@section('page-description','Detail profil, role, status, dan relasi akun.')
+@section('page-actions')<a href="{{ route('admin.users.edit',$user) }}" class="btn-primary"><x-admin.icon name="pencil-square" class="h-4 w-4" />Edit User</a>@endsection
+@section('content')
+<div class="grid gap-6 lg:grid-cols-3">
+    <div class="lumina-card p-6 lg:col-span-2"><div class="mb-5 flex items-center gap-4"><div class="flex h-16 w-16 items-center justify-center rounded-full bg-[#031632] text-xl font-bold text-white">{{ strtoupper(substr($user->fullname,0,1)) }}</div><div><h2 class="text-xl font-bold">{{ $user->fullname }}</h2><p class="text-sm text-[#44474d]">{{ $user->email }}</p></div></div><dl class="grid gap-4 sm:grid-cols-2">@foreach(['Phone'=>$user->phone,'Member Code'=>$user->member_code,'Profile Type'=>$user->profileType?->label,'Institution'=>$user->institution_name,'Major / Division'=>$user->major_name,'Current Level'=>$user->current_level,'Staff Position'=>$user->staff_position,'Staff Library'=>$user->staffLibrary?->name] as $label=>$value)<div class="rounded-2xl bg-[#f8f9fa] p-4"><dt class="text-xs font-semibold uppercase tracking-[0.08em] text-[#75777e]">{{ $label }}</dt><dd class="mt-1 text-sm font-bold text-[#191c1d]">{{ $value ?: '-' }}</dd></div>@endforeach</dl></div>
+    <div class="space-y-6"><div class="lumina-card p-6"><h2 class="lumina-section-title">Status</h2><div class="mt-4 flex flex-wrap gap-2"><x-admin.badge :status="$user->is_active ? 'active' : 'inactive'">{{ $user->is_active ? 'Active' : 'Inactive' }}</x-admin.badge><x-admin.badge :status="$user->is_verified ? 'verified' : 'inactive'">{{ $user->is_verified ? 'Verified' : 'Unverified' }}</x-admin.badge></div><form method="POST" action="{{ route('admin.users.toggle-status',$user) }}" class="mt-5">@csrf @method('PATCH')<button class="btn-outline w-full" data-submit-label="Updating">Toggle Status</button></form></div><div class="lumina-card p-6"><h2 class="lumina-section-title">Roles</h2><div class="mt-4 flex flex-wrap gap-2">@forelse($user->roles as $role)<x-admin.badge variant="primary">{{ $role->name }}</x-admin.badge>@empty<x-admin.badge>No role</x-admin.badge>@endforelse</div></div></div>
+</div>
+@endsection

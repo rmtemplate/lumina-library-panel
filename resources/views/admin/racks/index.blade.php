@@ -1,0 +1,11 @@
+@extends('layouts.admin')
+@section('title','Racks')
+@section('page-title','Racks')
+@section('page-description','Manajemen lokasi rak dan kapasitas buku per cabang.')
+@section('page-actions')<a href="{{ route('admin.racks.create') }}" class="btn-primary"><x-admin.icon name="plus" class="h-4 w-4" />Create Rack</a>@endsection
+@section('content')
+<x-admin.filters search-placeholder="Search rack code or name"><select name="branch_id" class="form-select w-full md:w-56"><option value="">All branches</option>@foreach($branches as $branch)<option value="{{ $branch->id }}" @selected(request('branch_id')==$branch->id)>{{ $branch->name }}</option>@endforeach</select></x-admin.filters>
+<div class="table-card overflow-x-auto"><table class="modern-table min-w-[900px]"><thead><tr><th>Rack</th><th>Branch</th><th>Location</th><th>Capacity</th><th>Books</th><th>Status</th><th class="text-right">Action</th></tr></thead><tbody>
+@forelse($racks as $rack)<tr><td><div class="font-bold">{{ $rack->name }}</div><div class="font-mono text-xs text-[#75777e]">{{ $rack->rack_code }}</div></td><td>{{ $rack->branch?->name ?? '-' }}</td><td><div>{{ $rack->floor_label ?: '-' }}</div><div class="text-xs text-[#44474d]">{{ $rack->area_label ?: '-' }} {{ $rack->aisle_code ? '· '.$rack->aisle_code : '' }}</div></td><td>{{ $rack->capacity }}</td><td><x-admin.badge variant="primary">{{ $rack->items_count ?? 0 }} copy</x-admin.badge></td><td><x-admin.badge :status="$rack->is_active ? 'active' : 'inactive'">{{ $rack->is_active ? 'Active' : 'Inactive' }}</x-admin.badge></td><td class="text-right"><x-admin.action-menu><x-admin.action-link :href="route('admin.racks.edit',$rack)" icon="pencil-square">Edit</x-admin.action-link><form method="POST" action="{{ route('admin.racks.destroy',$rack) }}" class="js-delete-form" data-delete-label="{{ $rack->rack_code }}">@csrf @method('DELETE')<x-admin.action-button icon="trash" danger>Delete</x-admin.action-button></form></x-admin.action-menu></td></tr>@empty<tr><td colspan="7"><x-admin.empty-state title="No racks found" description="Add rack locations to organize book placements." icon="archive-box" /></td></tr>@endforelse
+</tbody></table></div><x-admin.pagination :paginator="$racks" />
+@endsection
