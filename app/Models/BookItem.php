@@ -15,6 +15,7 @@ class BookItem extends Model
     use HasFactory, HasUuids, SoftDeletes;
 
     public const AVAILABLE = 'available';
+    public const RESERVED = 'reserved';
     public const BORROWED = 'borrowed';
     public const LOST = 'lost';
     public const DAMAGED = 'damaged';
@@ -26,7 +27,7 @@ class BookItem extends Model
 
     protected $fillable = [
         'book_id', 'branch_id', 'rack_id', 'item_code', 'barcode', 'acquisition_date',
-        'source', 'condition_note', 'status', 'is_active', 'created_by', 'updated_by',
+        'source', 'condition_note', 'status', 'is_active','deleted_at' ,'created_by', 'updated_by',
     ];
 
     protected $casts = [

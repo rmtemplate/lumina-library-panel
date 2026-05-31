@@ -25,6 +25,7 @@ class UserSession extends Model
         'ip_address',
         'expires_at',
         'last_activity_at',
+        'personal_access_token_id',
         'is_active',
         'created_at',
     ];

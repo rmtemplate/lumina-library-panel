@@ -3,9 +3,12 @@
 use App\Http\Middleware\AdminMiddleware;
 use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\SuperAdminMiddleware;
+use App\Support\Responses\ApiResponse;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -21,6 +24,16 @@ return Application::configure(basePath: dirname(__DIR__))
             'super_admin' => SuperAdminMiddleware::class,
         ]);
     })
-    ->withExceptions(function (Exceptions $exceptions): void {
-        // Central exception customization can be added here.
+    ->withExceptions(function ($exceptions) {
+        $exceptions->render(function (ValidationException $e, Request $request) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return ApiResponse::validation(
+                    errors: $e->errors(),
+                    message: 'Validasi gagal.',
+                    code: 'VALIDATION_ERROR'
+                );
+            }
+
+            return null;
+        });
     })->create();

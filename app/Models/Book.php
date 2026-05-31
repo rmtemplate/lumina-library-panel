@@ -35,6 +35,11 @@ class Book extends Model
         'deleted_at' => 'datetime',
     ];
 
+    public function wishlists()
+    {
+        return $this->hasMany(UserWishlist::class, 'book_id');
+    }
+
     public function category(): BelongsTo { return $this->belongsTo(BookCategory::class, 'category_id'); }
     public function items(): HasMany { return $this->hasMany(BookItem::class, 'book_id'); }
     public function activeItems(): HasMany { return $this->hasMany(BookItem::class, 'book_id')->where('is_active', true); }
@@ -50,5 +55,11 @@ class Book extends Model
     {
         if (! $this->cover_path) return null;
         return $this->cover_is_external ? $this->cover_path : asset('storage/'.$this->cover_path);
+    }
+    
+    public function availableItems()
+    {
+        return $this->hasMany(BookItem::class, 'book_id')
+            ->where('status', 'available');
     }
 }

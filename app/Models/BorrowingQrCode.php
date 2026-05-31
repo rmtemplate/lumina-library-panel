@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class BorrowingQrCode extends Model
@@ -56,4 +57,19 @@ class BorrowingQrCode extends Model
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
     ];
+
+    public function borrowing(): BelongsTo
+    {
+        return $this->belongsTo(Borrowing::class, 'borrowing_id');
+    }
+
+    public function refreshedFrom(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'refreshed_from_id');
+    }
+
+    public function usedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'used_by');
+    }
 }

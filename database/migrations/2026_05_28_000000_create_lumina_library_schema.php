@@ -210,17 +210,27 @@ CREATE TABLE `user_roles` (
 CREATE TABLE `user_sessions` (
   `id` char(36) NOT NULL,
   `user_id` char(36) NOT NULL,
+
+  `personal_access_token_id` bigint unsigned NULL,
   `token_hash` varchar(255) NOT NULL,
+
   `device_info` varchar(500) NULL,
   `ip_address` varchar(45) NULL,
-  `expires_at` timestamp NOT NULL,
+  `expires_at` timestamp NULL,
   `last_activity_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `is_active` tinyint(1) NOT NULL DEFAULT 1,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+
   PRIMARY KEY (`id`),
   KEY `idx_user_sessions_user` (`user_id`),
   KEY `idx_user_sessions_token` (`token_hash`),
-  CONSTRAINT `fk_user_sessions_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  KEY `idx_user_sessions_personal_access_token` (`personal_access_token_id`),
+  KEY `idx_user_sessions_active` (`is_active`),
+  KEY `idx_user_sessions_expires` (`expires_at`),
+
+  CONSTRAINT `fk_user_sessions_user`
+    FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)
+    ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `book_categories` (

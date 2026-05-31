@@ -1,6 +1,10 @@
 <?php
 
+use App\Http\Controllers\Auth\EmailVerificationController;
 use Illuminate\Support\Facades\Route;
+
+Route::get('/email/verify', [EmailVerificationController::class, 'verify'])
+    ->name('email.verify');
 
 Route::get('/', function () {
     return auth()->check()
