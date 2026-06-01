@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1;
+namespace App\Http\Controllers\Api\V1\Member;
 
 use App\Http\Controllers\Api\ApiController;
 use App\Http\Requests\Api\Checkout\CheckoutRequest;

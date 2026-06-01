@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1;
+namespace App\Http\Controllers\Api\V1\Member;
 
 use App\Http\Controllers\Api\ApiController;
 use App\Http\Requests\Api\Cart\AddToCartRequest;
@@ -45,7 +45,7 @@ class CartController extends ApiController
 
     public function removeItem(Request $request, string $cartItem): JsonResponse
     {
-        $cart = $this->cartService->removeItem(
+        $this->cartService->removeItem(
             user: $request->user(),
             cartItemId: $cartItem
         );
@@ -58,7 +58,7 @@ class CartController extends ApiController
 
     public function clear(Request $request): JsonResponse
     {
-        $cart = $this->cartService->clear($request->user());
+        $this->cartService->clear($request->user());
 
         return ApiResponse::deleted(
             message: 'Cart/keranjang berhasil dikosongkan.',

@@ -67,6 +67,31 @@ class User extends Authenticatable
     public function activityLogs(): HasMany { return $this->hasMany(ActivityLog::class, 'user_id'); }
     public function reservations(): HasMany { return $this->hasMany(BookReservation::class, 'user_id'); }
 
+    // ── Accessors ──────────────────────────────────────────────────────────
+
+    /**
+     * Resolves avatar_url secara aman:
+     * - null  jika tidak ada avatar_path
+     * - external URL langsung dikembalikan
+     * - local path dikonversi ke storage URL
+     */
+    public function getAvatarUrlAttribute(): ?string
+    {
+        if (! $this->avatar_path) {
+            return null;
+        }
+
+        if (
+            $this->avatar_is_external
+            || str_starts_with($this->avatar_path, 'http://')
+            || str_starts_with($this->avatar_path, 'https://')
+        ) {
+            return $this->avatar_path;
+        }
+
+        return asset('storage/' . $this->avatar_path);
+    }
+
     public function getBranchScopeId(): ?string
     {
         return $this->branch_id ?: $this->staff_library_id;

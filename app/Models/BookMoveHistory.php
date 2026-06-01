@@ -2,9 +2,10 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class BookMoveHistory extends Model
 {
@@ -26,6 +27,7 @@ class BookMoveHistory extends Model
 
     protected $fillable = [
         'book_id',
+        'book_item_id',
         'source_rack_id',
         'destination_rack_id',
         'reason',
@@ -41,4 +43,10 @@ class BookMoveHistory extends Model
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
+
+    public function book(): BelongsTo { return $this->belongsTo(Book::class, 'book_id'); }
+    public function bookItem(): BelongsTo { return $this->belongsTo(BookItem::class, 'book_item_id'); }
+    public function sourceRack(): BelongsTo { return $this->belongsTo(Rack::class, 'source_rack_id'); }
+    public function destinationRack(): BelongsTo { return $this->belongsTo(Rack::class, 'destination_rack_id'); }
+    public function movedBy(): BelongsTo { return $this->belongsTo(User::class, 'moved_by'); }
 }

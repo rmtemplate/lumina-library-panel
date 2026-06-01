@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Api\V1;
+namespace App\Http\Controllers\Api\V1\Member;
 
 use App\Http\Controllers\Api\ApiController;
 use App\Http\Resources\BookCatalogLocationResource;
@@ -125,6 +125,7 @@ class BookController extends ApiController
 
         try {
             $isAdded = $this->bookService->addBookToWishlist($bookId, $user);
+
             return ApiResponse::created(
                 message: $isAdded
                     ? 'Book added to wishlist successfully.'

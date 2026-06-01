@@ -16,10 +16,15 @@ class BorrowingQrCode extends Model
     public const KEMBALIKAN = 'kembalikan';
     public const TYPE_BORROW = 'minjam';
     public const TYPE_RETURN = 'kembalikan';
+    public const TYPE_BORROWING_PICKUP = 'borrowing_pickup';
+    public const TYPE_BORROWING_RETURN = 'borrowing_return';
+    public const TYPE_BOOK_INTAKE = 'book_intake';
     public const ACTIVE = 'active';
     public const USED = 'used';
     public const EXPIRED = 'expired';
     public const REVOKED = 'revoked';
+    public const REFRESHED = 'refreshed';
+    public const IN_REVIEW = 'in_review';
     public const STATUS_ACTIVE = 'active';
     public const STATUS_USED = 'used';
     public const STATUS_EXPIRED = 'expired';
@@ -34,14 +39,17 @@ class BorrowingQrCode extends Model
     public $timestamps = true;
 
     protected $fillable = [
+        'refreshed_from_id',
         'borrowing_id',
         'qr_code',
         'qr_type',
         'status',
+        'refresh_count',
         'payload',
         'expires_at',
         'used_at',
         'used_by',
+        'last_refreshed_at',
         'created_at',
         'updated_at',
         'deleted_at',
@@ -53,6 +61,8 @@ class BorrowingQrCode extends Model
         'payload' => 'array',
         'expires_at' => 'datetime',
         'used_at' => 'datetime',
+        'last_refreshed_at' => 'datetime',
+        'refresh_count' => 'integer',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',

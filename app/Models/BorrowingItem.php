@@ -13,12 +13,14 @@ class BorrowingItem extends Model
 {
     use HasFactory, HasUuids, SoftDeletes;
 
+    public const PENDING = 'pending';
     public const ACTIVE = 'active';
     public const RETURNED = 'returned';
     public const OVERDUE = 'overdue';
     public const LOST = 'lost';
     public const DAMAGED = 'damaged';
     public const CANCELLED = 'cancelled';
+    public const EXPIRED = 'expired';
 
     protected $table = 'borrowing_items';
     public $incrementing = false;

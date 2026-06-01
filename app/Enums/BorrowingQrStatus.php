@@ -8,4 +8,5 @@ enum BorrowingQrStatus: string
     case Used = 'used';
     case Expired = 'expired';
     case Revoked = 'revoked';
+    case Refreshed = 'refreshed';
 }
