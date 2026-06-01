@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\V1\Auth\AuthenticationController;
 use App\Http\Controllers\Api\V1\BookController;
 use App\Http\Controllers\Api\V1\CartController;
 use App\Http\Controllers\Api\V1\CheckoutController;
+use App\Http\Controllers\Api\V1\MyBookController;
 use App\Http\Controllers\Api\V1\PublicController;
 use App\Http\Controllers\Api\V1\QrController;
 use Illuminate\Support\Facades\Route;
@@ -129,6 +130,17 @@ Route::prefix('v1')->name('api.v1.')->group(function () {
         Route::prefix('borrowings')->name('borrowings.')->group(function () {
             Route::post('{borrowing}/qr/refresh', [QrController::class, 'refreshBorrowingPickup'])
                 ->name('qr.refresh');
+        });
+
+        Route::prefix('my-books')->name('my-books.')->group(function () {
+            Route::get('/', [MyBookController::class, 'index'])
+                ->name('index');
+
+            Route::get('{borrowing}', [MyBookController::class, 'show'])
+                ->name('show');
+
+            Route::post('{borrowing}/return-qr/refresh', [MyBookController::class, 'refreshReturnQr'])
+                ->name('return-qr.refresh');
         });
     });
 });

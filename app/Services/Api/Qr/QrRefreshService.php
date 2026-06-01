@@ -7,6 +7,7 @@ use App\Models\BookItem;
 use App\Models\Borrowing;
 use App\Models\BorrowingQrCode;
 use App\Models\User;
+use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -15,7 +16,8 @@ class QrRefreshService
 {
     public function __construct(
         private readonly QrPayloadService $qrPayloadService,
-        private readonly QrImageService $qrImageService
+        private readonly QrImageService $qrImageService,
+        private readonly BorrowingReservationExpiryService $reservationExpiryService
     ) {
     }
 
@@ -41,7 +43,7 @@ class QrRefreshService
             }
 
             if ($borrowing->reservation_expires_at && $borrowing->reservation_expires_at->isPast()) {
-                $this->expireBorrowingAndReleaseStock($borrowing);
+                $this->reservationExpiryService->expireOne($borrowing->id);
 
                 throw ValidationException::withMessages([
                     'borrowing_id' => ['Reservasi peminjaman sudah kedaluwarsa. Silakan checkout ulang.'],
