@@ -82,14 +82,22 @@ class MyBookResource extends JsonResource
                 })->values();
             }),
 
+            'reservation_expires_at' => $this->reservation_expires_at?->toISOString(),
+
             'actions' => [
                 'can_return' => in_array(
                     (string) ($this->computed_status ?? $this->status),
                     ['active', 'due_soon', 'overdue'],
                     true
                 ),
+                'can_pickup' => (string) ($this->computed_status ?? $this->status) === 'awaiting_pickup',
                 'return_qr_endpoint' => route(
                     'api.v1.my-books.return-qr.refresh',
+                    ['borrowing' => $this->id],
+                    false
+                ),
+                'pickup_qr_refresh_endpoint' => route(
+                    'api.v1.borrowings.qr.refresh',
                     ['borrowing' => $this->id],
                     false
                 ),

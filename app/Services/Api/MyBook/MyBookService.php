@@ -210,8 +210,8 @@ class MyBookService
             'returned' => $query
                 ->whereIn('status', ['returned', 'returned_with_fine']),
 
-            default => $query
-                ->whereIn('status', ['active', 'returned', 'returned_with_fine']),
+            // Default: tampilkan semua status — termasuk pending, awaiting_pickup, dll.
+            default => null,
         };
     }
 
