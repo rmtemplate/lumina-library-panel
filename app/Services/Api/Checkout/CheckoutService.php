@@ -3,6 +3,7 @@
 namespace App\Services\Api\Checkout;
 
 use App\Enums\QrCodeType;
+use App\Events\Qr\QrGenerated;
 use App\Models\BookItem;
 use App\Models\Borrowing;
 use App\Models\BorrowingItem;
@@ -17,6 +18,7 @@ use App\Services\AppSettingService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -137,6 +139,16 @@ class CheckoutService
                 ->whereIn('id', $cartItems->pluck('id')->all())
                 ->delete();
 
+            DB::afterCommit(function () use ($user, $qr) {
+                QrGenerated::dispatch($user->id, $qr);
+
+                Log::info('[WS] Broadcast sent: qr.generated', [
+                    'qr_id' => $qr->id,
+                    'borrowing_id' => $qr->borrowing_id,
+                    'channel' => 'user.' . $user->id,
+                ]);
+            });
+
             return $this->buildCheckoutResponse(
                 borrowing: $borrowing,
                 borrowingItems: collect($borrowingItems),
@@ -218,7 +230,10 @@ class CheckoutService
             ? 'branch_id'
             : 'library_branch_id';
 
-        $reservationHoldHours = $this->appSettingService->getInt('reservation_hold_hours', 24);
+        $reservationHoldHours = $this->appSettingService->getInt(
+            'reservation_hold_hours',
+            (int) config('lumina.borrowing.pickup_expired_after_hours', 24)
+        );
 
         return Borrowing::query()->create([
             'id' => (string) Str::uuid(),

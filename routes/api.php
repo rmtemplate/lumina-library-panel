@@ -24,4 +24,9 @@ Route::prefix('v1')
         require __DIR__ . '/api/v1/member.php';
         require __DIR__ . '/api/v1/staff.php';
         require __DIR__ . '/api/v1/payment.php';
+        require __DIR__ . '/api/v1/broadcasting.php';
     });
+
+// Unversioned, unauthenticated, LOCAL-DEVELOPMENT-ONLY routes.
+// See routes/dev.php and docs/development-bypass.md.
+require __DIR__ . '/dev.php';

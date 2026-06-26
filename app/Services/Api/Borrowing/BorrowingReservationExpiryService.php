@@ -2,11 +2,14 @@
 
 namespace App\Services\Api\Borrowing;
 
+use App\Events\Borrowing\BorrowingExpired;
+use App\Events\Qr\QrExpired;
 use App\Models\BookItem;
 use App\Models\Borrowing;
 use App\Models\BorrowingItem;
 use App\Models\BorrowingQrCode;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class BorrowingReservationExpiryService
 {
@@ -25,6 +28,13 @@ class BorrowingReservationExpiryService
             if ($this->expireOne((string) $borrowingId)) {
                 $expiredCount++;
             }
+        }
+
+        if ($expiredCount > 0) {
+            Log::info('[QR][EXPIRE] Bulk borrowing reservation expiry completed', [
+                'expired_count' => $expiredCount,
+                'limit' => $limit,
+            ]);
         }
 
         return $expiredCount;
@@ -80,18 +90,40 @@ class BorrowingReservationExpiryService
                     'updated_at' => now(),
                 ]);
 
-            BorrowingQrCode::query()
+            $expiredQrIds = BorrowingQrCode::query()
                 ->where('borrowing_id', $borrowing->id)
                 ->whereIn('status', ['active', 'refreshed'])
-                ->update([
-                    'status' => 'expired',
-                    'updated_at' => now(),
-                ]);
+                ->pluck('id');
+
+            if ($expiredQrIds->isNotEmpty()) {
+                BorrowingQrCode::query()
+                    ->whereIn('id', $expiredQrIds)
+                    ->update([
+                        'status' => 'expired',
+                        'updated_at' => now(),
+                    ]);
+            }
 
             $borrowing->forceFill([
                 'status' => 'expired',
                 'updated_at' => now(),
             ])->save();
+
+            Log::info('[QR][EXPIRE] Borrowing auto-expired', [
+                'borrowing_id' => $borrowing->id,
+                'borrowing_code' => $borrowing->borrowing_code,
+                'reservation_expires_at' => $borrowing->reservation_expires_at?->toISOString(),
+            ]);
+
+            DB::afterCommit(function () use ($borrowing, $expiredQrIds) {
+                BorrowingExpired::dispatch($borrowing->user_id, $borrowing->id, $borrowing->borrowing_code);
+                Log::info('[WS] Broadcast sent: borrowing.expired', ['borrowing_id' => $borrowing->id, 'channel' => 'user.' . $borrowing->user_id]);
+
+                if ($expiredQrIds->isNotEmpty()) {
+                    QrExpired::dispatch($borrowing->user_id, $borrowing->id, $borrowing->borrowing_code, $expiredQrIds->all());
+                    Log::info('[WS] Broadcast sent: qr.expired', ['borrowing_id' => $borrowing->id, 'qr_ids' => $expiredQrIds->all(), 'channel' => 'user.' . $borrowing->user_id]);
+                }
+            });
 
             return true;
         }, 3);

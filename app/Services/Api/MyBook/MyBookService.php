@@ -3,7 +3,8 @@
 namespace App\Services\Api\MyBook;
 
 use App\Enums\QrCodeType;
-use App\Events\MyBookStatusUpdated;
+use App\Events\Qr\QrGenerated;
+use App\Events\Qr\QrRefreshed;
 use App\Models\Borrowing;
 use App\Models\BorrowingQrCode;
 use App\Models\User;
@@ -15,21 +16,28 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
 
 class MyBookService
 {
     public function __construct(
         private readonly AppSettingService $appSettingService,
         private readonly QrPayloadService $qrPayloadService,
-        private readonly QrImageService $qrImageService
+        private readonly QrImageService $qrImageService,
+        private readonly BorrowingReservationExpiryService $reservationExpiryService
     ) {
     }
 
     public function paginate(User $user, array $filters = []): LengthAwarePaginator
     {
+        // Runtime expiry backstop: self-heal any stale awaiting_pickup rows
+        // on read, regardless of whether the scheduler/cron is running.
+        $this->reservationExpiryService->expireDueReservations(200);
+
         $perPage = min(max((int) ($filters['per_page'] ?? 10), 1), 50);
         $status = $filters['status'] ?? null;
 
@@ -51,6 +59,9 @@ class MyBookService
 
     public function findDetail(User $user, string $borrowingId): Borrowing
     {
+        // Targeted runtime expiry backstop for this single row.
+        $this->reservationExpiryService->expireOne($borrowingId);
+
         $borrowing = Borrowing::query()
             ->with($this->borrowingRelations())
             ->where('id', $borrowingId)
@@ -93,6 +104,11 @@ class MyBookService
                     'borrowing_id' => ['QR pengembalian hanya bisa dibuat untuk buku yang sedang dipinjam.'],
                 ]);
             }
+
+            $hadAnyPreviousQr = BorrowingQrCode::query()
+                ->where('borrowing_id', $borrowing->id)
+                ->where('qr_type', QrCodeType::BORROWING_RETURN->value)
+                ->exists();
 
             $previousQr = BorrowingQrCode::query()
                 ->where('borrowing_id', $borrowing->id)
@@ -143,22 +159,23 @@ class MyBookService
                 'updated_at' => now(),
             ]);
 
-            DB::afterCommit(function () use ($user, $borrowing, $qr, $computedStatus) {
-                broadcast(new MyBookStatusUpdated(
-                    userId: $user->id,
-                    payload: [
-                        'event' => 'return_qr_refreshed',
-                        'borrowing_id' => $borrowing->id,
-                        'borrowing_code' => $borrowing->borrowing_code,
-                        'status' => $computedStatus,
-                        'qr' => [
-                            'id' => $qr->id,
-                            'type' => $qr->qr_type,
-                            'status' => $qr->status,
-                            'expires_at' => $qr->expires_at?->toISOString(),
-                        ],
-                    ]
-                ));
+            Log::info('[QR][REFRESH] Return QR refreshed', [
+                'borrowing_id' => $borrowing->id,
+                'previous_qr_id' => $previousQr?->id,
+                'new_qr_id' => $qr->id,
+                'refresh_count' => $qr->refresh_count,
+                'expires_at' => $qr->expires_at?->toISOString(),
+                'user_id' => $user->id,
+            ]);
+
+            DB::afterCommit(function () use ($user, $qr, $previousQr, $hadAnyPreviousQr) {
+                if ($hadAnyPreviousQr) {
+                    QrRefreshed::dispatch($user->id, $qr, $previousQr?->id);
+                    Log::info('[WS] Broadcast sent: qr.refreshed', ['qr_id' => $qr->id, 'channel' => 'user.' . $user->id]);
+                } else {
+                    QrGenerated::dispatch($user->id, $qr);
+                    Log::info('[WS] Broadcast sent: qr.generated', ['qr_id' => $qr->id, 'channel' => 'user.' . $user->id]);
+                }
             });
 
             return [
@@ -317,12 +334,8 @@ class MyBookService
 
     private function generateQrCodeToken(): string
     {
-        do {
-            $code = 'QR-' . strtoupper(Str::random(24));
-        } while (
-            BorrowingQrCode::query()->where('qr_code', $code)->exists()
-        );
-
-        return $code;
+        // See QrRefreshService::generateQrCodeToken() — UUIDv4 avoids the
+        // exists()-check-then-create TOCTOU race under concurrent refreshes.
+        return 'QR-' . strtoupper(str_replace('-', '', (string) Str::uuid()));
     }
 }

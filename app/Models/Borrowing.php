@@ -24,6 +24,10 @@ class Borrowing extends Model
     public const EXPIRED = 'expired';
     public const CANCELLED = 'cancelled';
 
+    public const PICKUP_METHOD_QR_SCAN = 'qr_scan';
+    public const PICKUP_METHOD_STAFF_BYPASS = 'staff_bypass';
+    public const PICKUP_METHOD_DEV_BYPASS = 'DEV_BYPASS';
+
     protected $table = 'borrowings';
     public $incrementing = false;
     protected $keyType = 'string';
@@ -31,7 +35,7 @@ class Borrowing extends Model
     protected $fillable = [
         'borrowing_code', 'user_id', 'branch_id', 'library_branch_id', 'borrow_date',
         'due_date', 'return_date', 'status', 'notes', 'approved_by', 'approved_at',
-        'reservation_expires_at', 'created_by', 'updated_by',
+        'reservation_expires_at', 'pickup_method', 'created_by', 'updated_by',
     ];
 
     protected $casts = [

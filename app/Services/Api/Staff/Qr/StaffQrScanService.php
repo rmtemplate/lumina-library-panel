@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\ActivityLogService;
 use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
 use App\Services\Api\Payment\BorrowingPaymentService;
+use App\Services\Api\Pickup\PickupBroadcastService;
 use App\Services\Api\Qr\QrPayloadService;
 use App\Services\Api\Staff\Borrowing\StaffBorrowingService;
 use App\Services\Api\Staff\Support\StaffAccessService;
@@ -33,7 +34,8 @@ class StaffQrScanService
         private readonly StaffBorrowingService $staffBorrowingService,
         private readonly AppSettingService $appSettingService,
         private readonly BorrowingPaymentService $borrowingPaymentService,
-        private readonly ActivityLogService $activityLogService
+        private readonly ActivityLogService $activityLogService,
+        private readonly PickupBroadcastService $pickupBroadcastService
     ) {
     }
 
@@ -48,12 +50,16 @@ class StaffQrScanService
             $this->staffAccessService->assertSameBranch($staff, $borrowingBranchId);
 
             if ((string) ($payload['branch_id'] ?? '') !== (string) $staffBranchId) {
+                $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, 'QR tidak sesuai dengan cabang staff.', 'qr_scan');
+
                 throw ValidationException::withMessages([
                     'qr' => ['QR tidak sesuai dengan cabang staff.'],
                 ]);
             }
 
             if ($borrowing->status !== Borrowing::AWAITING_PICKUP) {
+                $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, 'Transaksi ini tidak sedang menunggu pengambilan buku.', 'qr_scan');
+
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini tidak sedang menunggu pengambilan buku.'],
                 ]);
@@ -61,6 +67,8 @@ class StaffQrScanService
 
             if ($borrowing->reservation_expires_at && $borrowing->reservation_expires_at->isPast()) {
                 $this->reservationExpiryService->expireOne($borrowing->id);
+
+                $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, 'Reservasi peminjaman sudah kedaluwarsa.', 'qr_scan');
 
                 throw ValidationException::withMessages([
                     'borrowing' => ['Reservasi peminjaman sudah kedaluwarsa. Stock telah dilepas kembali.'],
@@ -91,6 +99,8 @@ class StaffQrScanService
                 $bookItem = $bookItems->get($item->book_item_id);
 
                 if (! $bookItem || $bookItem->status !== BookItem::RESERVED) {
+                    $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, "Buku '{$item->book?->title}' tidak dalam status reserved.", 'qr_scan');
+
                     throw ValidationException::withMessages([
                         'book_item' => ["Buku '{$item->book?->title}' tidak dalam status reserved."],
                     ]);
@@ -112,6 +122,7 @@ class StaffQrScanService
                 'status' => Borrowing::ACTIVE,
                 'approved_by' => $staff->id,
                 'approved_at' => now(),
+                'pickup_method' => Borrowing::PICKUP_METHOD_QR_SCAN,
                 'updated_by' => $staff->id,
                 'updated_at' => now(),
             ])->save();
@@ -125,24 +136,160 @@ class StaffQrScanService
                 referenceId: $borrowing->id
             );
 
+            Log::info('[QR][SCAN] Pickup scan success', [
+                'borrowing_id' => $borrowing->id,
+                'qr_id' => $qr->id,
+                'staff_id' => $staff->id,
+            ]);
+
             $detail = $this->staffBorrowingService->findDetail($staff, $borrowing->id);
 
-            DB::afterCommit(function () use ($borrowing) {
-                broadcast(new MyBookStatusUpdated(
-                    userId: $borrowing->user_id,
-                    payload: [
-                        'event' => 'borrowing_pickup_completed',
-                        'borrowing_id' => $borrowing->id,
-                        'borrowing_code' => $borrowing->borrowing_code,
-                        'status' => Borrowing::ACTIVE,
-                    ]
-                ));
-            });
+            $this->pickupBroadcastService->success($borrowing, Borrowing::PICKUP_METHOD_QR_SCAN);
 
             return [
                 'borrowing' => $this->summary($detail),
                 'payment_required' => false,
                 'message' => 'Checkout/pengambilan buku berhasil diproses oleh staff.',
+            ];
+        }, 3);
+    }
+
+    /**
+     * Staff bypass: confirm a pickup without scanning a QR. Runs every business
+     * validation scanPickup() does (branch match, AWAITING_PICKUP status,
+     * reservation not expired, book items RESERVED) except QR resolution.
+     * Gated by config('lumina.staff_bypass.enabled') — disabled by default.
+     */
+    public function forcePickup(User $staff, string $borrowingId, ?string $notes = null): array
+    {
+        if (! config('lumina.staff_bypass.enabled')) {
+            throw ValidationException::withMessages([
+                'staff_bypass' => ['Staff bypass tidak diaktifkan pada konfigurasi server ini.'],
+            ]);
+        }
+
+        return DB::transaction(function () use ($staff, $borrowingId, $notes) {
+            $staffBranchId = $this->staffAccessService->branchId($staff);
+
+            $borrowing = $this->lockBorrowing($borrowingId);
+            $borrowingBranchId = $this->resolveBorrowingBranchId($borrowing);
+            $this->staffAccessService->assertSameBranch($staff, $borrowingBranchId);
+
+            if ($borrowing->status !== Borrowing::AWAITING_PICKUP) {
+                $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, 'Transaksi ini tidak sedang menunggu pengambilan buku.', 'staff_bypass');
+
+                throw ValidationException::withMessages([
+                    'borrowing' => ['Transaksi ini tidak sedang menunggu pengambilan buku.'],
+                ]);
+            }
+
+            if ($borrowing->reservation_expires_at && $borrowing->reservation_expires_at->isPast()) {
+                $this->reservationExpiryService->expireOne($borrowing->id);
+
+                $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, 'Reservasi peminjaman sudah kedaluwarsa.', 'staff_bypass');
+
+                throw ValidationException::withMessages([
+                    'borrowing' => ['Reservasi peminjaman sudah kedaluwarsa. Stock telah dilepas kembali.'],
+                ]);
+            }
+
+            $items = BorrowingItem::query()
+                ->with(['book', 'bookItem'])
+                ->where('borrowing_id', $borrowing->id)
+                ->lockForUpdate()
+                ->get();
+
+            if ($items->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'borrowing' => ['Tidak ada item peminjaman pada transaksi ini.'],
+                ]);
+            }
+
+            $bookItemIds = $items->pluck('book_item_id')->filter()->unique()->values();
+
+            $bookItems = BookItem::query()
+                ->whereIn('id', $bookItemIds)
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('id');
+
+            foreach ($items as $item) {
+                $bookItem = $bookItems->get($item->book_item_id);
+
+                if (! $bookItem || $bookItem->status !== BookItem::RESERVED) {
+                    $this->pickupBroadcastService->failed($borrowing->id, $borrowing->borrowing_code, "Buku '{$item->book?->title}' tidak dalam status reserved.", 'staff_bypass');
+
+                    throw ValidationException::withMessages([
+                        'book_item' => ["Buku '{$item->book?->title}' tidak dalam status reserved."],
+                    ]);
+                }
+
+                $bookItem->forceFill([
+                    'status' => BookItem::BORROWED,
+                    'updated_by' => $staff->id,
+                    'updated_at' => now(),
+                ])->save();
+
+                $item->forceFill([
+                    'status' => BorrowingItem::ACTIVE,
+                    'updated_at' => now(),
+                ])->save();
+            }
+
+            $borrowing->forceFill([
+                'status' => Borrowing::ACTIVE,
+                'approved_by' => $staff->id,
+                'approved_at' => now(),
+                'pickup_method' => Borrowing::PICKUP_METHOD_STAFF_BYPASS,
+                'notes' => $notes ?: $borrowing->notes,
+                'updated_by' => $staff->id,
+                'updated_at' => now(),
+            ])->save();
+
+            // Invalidate any still-active/refreshed pickup QR so it can never
+            // be scanned after the bypass has already completed the pickup.
+            $invalidatedQrIds = BorrowingQrCode::query()
+                ->where('borrowing_id', $borrowing->id)
+                ->where('qr_type', QrCodeType::BORROWING_PICKUP->value)
+                ->whereIn('status', [BorrowingQrCode::ACTIVE, BorrowingQrCode::REFRESHED])
+                ->lockForUpdate()
+                ->pluck('id');
+
+            if ($invalidatedQrIds->isNotEmpty()) {
+                BorrowingQrCode::query()
+                    ->whereIn('id', $invalidatedQrIds)
+                    ->update([
+                        'status' => BorrowingQrCode::USED,
+                        'used_at' => now(),
+                        'used_by' => $staff->id,
+                        'updated_by' => $staff->id,
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            $this->activityLogService->logScan(
+                branchId: (string) $staffBranchId,
+                staffId: $staff->id,
+                scanType: 'staff_bypass_pickup',
+                referenceId: $borrowing->id
+            );
+
+            Log::warning('[QR][BYPASS] Staff bypass pickup confirmed', [
+                'borrowing_id' => $borrowing->id,
+                'borrowing_code' => $borrowing->borrowing_code,
+                'staff_id' => $staff->id,
+                'branch_id' => $staffBranchId,
+                'invalidated_qr_ids' => $invalidatedQrIds->all(),
+            ]);
+
+            $detail = $this->staffBorrowingService->findDetail($staff, $borrowing->id);
+
+            $this->pickupBroadcastService->success($borrowing, Borrowing::PICKUP_METHOD_STAFF_BYPASS);
+
+            return [
+                'borrowing' => $this->summary($detail),
+                'payment_required' => false,
+                'message' => 'Pengambilan buku berhasil diproses oleh staff (bypass QR).',
             ];
         }, 3);
     }
@@ -407,6 +554,13 @@ class StaffQrScanService
                 fineAmount: $totalFine
             );
 
+            Log::info('[QR][SCAN] Return scan/confirm success', [
+                'borrowing_id' => $borrowing->id,
+                'qr_id' => $qr->id,
+                'staff_id' => $staff->id,
+                'total_fine' => $totalFine,
+            ]);
+
             // Create Midtrans payment when fines exist.
             $payment = null;
             if ($paymentRequired) {
@@ -525,8 +679,16 @@ class StaffQrScanService
 
     private function resolveQr(string $rawQr, QrCodeType $type): array
     {
-        $payload = $this->qrPayloadService->decode($rawQr);
-        $this->qrPayloadService->verify($payload, $type);
+        try {
+            $payload = $this->qrPayloadService->decode($rawQr);
+            $this->qrPayloadService->verify($payload, $type);
+        } catch (ValidationException $e) {
+            Log::warning('[QR][SCAN] QR invalid (payload/signature)', [
+                'qr_type' => $type->value,
+                'errors' => $e->errors(),
+            ]);
+            throw $e;
+        }
 
         $qr = BorrowingQrCode::query()
             ->where('qr_code', $payload['jti'] ?? null)
@@ -535,24 +697,55 @@ class StaffQrScanService
             ->first();
 
         if (! $qr) {
+            Log::warning('[QR][SCAN] QR not found in database', [
+                'qr_type' => $type->value,
+                'jti' => $payload['jti'] ?? null,
+            ]);
+
             throw ValidationException::withMessages([
                 'qr' => ['QR tidak terdaftar pada sistem Lumina Library.'],
             ]);
         }
 
         if ($qr->status !== BorrowingQrCode::ACTIVE) {
+            Log::warning('[QR][SCAN] QR scan failed — not active', [
+                'qr_id' => $qr->id,
+                'status' => $qr->status,
+                'borrowing_id' => $qr->borrowing_id,
+            ]);
+
+            if ($type === QrCodeType::BORROWING_PICKUP) {
+                $this->pickupBroadcastService->failed((string) $qr->borrowing_id, null, 'QR sudah tidak aktif.', 'qr_scan');
+            }
+
             throw ValidationException::withMessages([
                 'qr' => ['QR sudah tidak aktif.'],
             ]);
         }
 
         if ($qr->expires_at && $qr->expires_at->isPast()) {
+            Log::warning('[QR][SCAN] QR scan failed — expired', [
+                'qr_id' => $qr->id,
+                'expires_at' => $qr->expires_at?->toISOString(),
+                'borrowing_id' => $qr->borrowing_id,
+            ]);
+
+            if ($type === QrCodeType::BORROWING_PICKUP) {
+                $this->pickupBroadcastService->failed((string) $qr->borrowing_id, null, 'QR sudah kedaluwarsa.', 'qr_scan');
+            }
+
             throw ValidationException::withMessages([
                 'qr' => ['QR sudah kedaluwarsa. Silakan refresh QR.'],
             ]);
         }
 
         if ((string) $qr->borrowing_id !== (string) ($payload['borrowing_id'] ?? '')) {
+            Log::warning('[QR][SCAN] QR scan failed — borrowing mismatch', [
+                'qr_id' => $qr->id,
+                'qr_borrowing_id' => $qr->borrowing_id,
+                'payload_borrowing_id' => $payload['borrowing_id'] ?? null,
+            ]);
+
             throw ValidationException::withMessages([
                 'qr' => ['Data QR tidak sesuai dengan transaksi.'],
             ]);

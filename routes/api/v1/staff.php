@@ -30,6 +30,10 @@ Route::middleware('auth:sanctum')
             Route::get('/', [StaffBorrowingController::class, 'index'])->name('index');
             Route::get('{borrowing}', [StaffBorrowingController::class, 'show'])->name('show');
 
+            // Dev/testing/emergency override — confirm pickup without scanning a QR.
+            // Gated by config('lumina.staff_bypass.enabled') (APP_ENABLE_STAFF_BYPASS).
+            Route::post('{borrowing}/force-pickup', [StaffBorrowingController::class, 'forcePickup'])->name('force-pickup');
+
             // Payment management per borrowing
             Route::get('{borrowing}/payment', [StaffPaymentController::class, 'show'])->name('payment.show');
             Route::post('{borrowing}/payment/sync', [StaffPaymentController::class, 'sync'])->name('payment.sync');

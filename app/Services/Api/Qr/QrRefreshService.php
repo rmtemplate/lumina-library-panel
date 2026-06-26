@@ -3,12 +3,15 @@
 namespace App\Services\Api\Qr;
 
 use App\Enums\QrCodeType;
+use App\Events\Qr\QrGenerated;
+use App\Events\Qr\QrRefreshed;
 use App\Models\BookItem;
 use App\Models\Borrowing;
 use App\Models\BorrowingQrCode;
 use App\Models\User;
 use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -49,6 +52,11 @@ class QrRefreshService
                     'borrowing_id' => ['Reservasi peminjaman sudah kedaluwarsa. Silakan checkout ulang.'],
                 ]);
             }
+
+            $hadAnyPreviousQr = BorrowingQrCode::query()
+                ->where('borrowing_id', $borrowing->id)
+                ->where('qr_type', QrCodeType::BORROWING_PICKUP->value)
+                ->exists();
 
             $previousQr = BorrowingQrCode::query()
                 ->where('borrowing_id', $borrowing->id)
@@ -102,6 +110,25 @@ class QrRefreshService
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+
+            Log::info('[QR][REFRESH] Pickup QR refreshed', [
+                'borrowing_id' => $borrowing->id,
+                'previous_qr_id' => $previousQr?->id,
+                'new_qr_id' => $newQr->id,
+                'refresh_count' => $newQr->refresh_count,
+                'expires_at' => $newQr->expires_at?->toISOString(),
+                'user_id' => $user->id,
+            ]);
+
+            DB::afterCommit(function () use ($user, $newQr, $previousQr, $hadAnyPreviousQr) {
+                if ($hadAnyPreviousQr) {
+                    QrRefreshed::dispatch($user->id, $newQr, $previousQr?->id);
+                    Log::info('[WS] Broadcast sent: qr.refreshed', ['qr_id' => $newQr->id, 'channel' => 'user.' . $user->id]);
+                } else {
+                    QrGenerated::dispatch($user->id, $newQr);
+                    Log::info('[WS] Broadcast sent: qr.generated', ['qr_id' => $newQr->id, 'channel' => 'user.' . $user->id]);
+                }
+            });
 
             return [
                 'borrowing' => [
@@ -159,12 +186,10 @@ class QrRefreshService
 
     private function generateQrCodeToken(): string
     {
-        do {
-            $code = 'QR-' . strtoupper(Str::random(24));
-        } while (
-            BorrowingQrCode::query()->where('qr_code', $code)->exists()
-        );
-
-        return $code;
+        // UUIDv4 entropy makes collisions negligible, so we generate once
+        // instead of an exists()-check-then-create loop (which is a TOCTOU
+        // race under concurrent refreshes). The `qr_code` UNIQUE constraint
+        // remains as a DB-level safety net.
+        return 'QR-' . strtoupper(str_replace('-', '', (string) Str::uuid()));
     }
 }

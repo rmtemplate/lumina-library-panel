@@ -5,6 +5,7 @@ namespace App\Services\Api\Staff\Borrowing;
 use App\Models\Borrowing;
 use App\Models\BorrowingQrCode;
 use App\Models\User;
+use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
 use App\Services\Api\Staff\Support\StaffAccessService;
 use App\Services\AppSettingService;
 use Carbon\Carbon;
@@ -18,12 +19,16 @@ class StaffBorrowingService
 {
     public function __construct(
         private readonly StaffAccessService $staffAccessService,
-        private readonly AppSettingService $appSettingService
+        private readonly AppSettingService $appSettingService,
+        private readonly BorrowingReservationExpiryService $reservationExpiryService
     ) {
     }
 
     public function paginate(User $staff, array $filters = []): LengthAwarePaginator
     {
+        // Runtime expiry backstop — see MyBookService::paginate() for rationale.
+        $this->reservationExpiryService->expireDueReservations(200);
+
         $branchId = $this->staffAccessService->branchId($staff);
         $perPage = min(max((int) ($filters['per_page'] ?? 10), 1), 50);
 
@@ -44,6 +49,9 @@ class StaffBorrowingService
 
     public function findDetail(User $staff, string $borrowingId): Borrowing
     {
+        // Targeted runtime expiry backstop for this single row.
+        $this->reservationExpiryService->expireOne($borrowingId);
+
         $branchId = $this->staffAccessService->branchId($staff);
 
         $borrowing = $this->baseQuery($branchId)

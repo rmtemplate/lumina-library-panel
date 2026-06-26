@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\AdminMiddleware;
+use App\Http\Middleware\EnsureDevBypassEnabled;
 use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\SuperAdminMiddleware;
 use App\Support\Responses\ApiResponse;
@@ -23,6 +24,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin' => AdminMiddleware::class,
             'role' => RoleMiddleware::class,
             'super_admin' => SuperAdminMiddleware::class,
+            'dev_bypass' => EnsureDevBypassEnabled::class,
         ]);
     })
     ->withExceptions(function ($exceptions) {
