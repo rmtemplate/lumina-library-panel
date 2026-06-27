@@ -20,7 +20,9 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use App\Services\Api\Borrowing\BorrowingOverdueService;
 use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
+use App\Services\Api\Borrowing\FineCalculator;
 
 class MyBookService
 {
@@ -28,15 +30,18 @@ class MyBookService
         private readonly AppSettingService $appSettingService,
         private readonly QrPayloadService $qrPayloadService,
         private readonly QrImageService $qrImageService,
-        private readonly BorrowingReservationExpiryService $reservationExpiryService
+        private readonly BorrowingReservationExpiryService $reservationExpiryService,
+        private readonly FineCalculator $fineCalculator,
+        private readonly BorrowingOverdueService $overdueService
     ) {
     }
 
     public function paginate(User $user, array $filters = []): LengthAwarePaginator
     {
-        // Runtime expiry backstop: self-heal any stale awaiting_pickup rows
-        // on read, regardless of whether the scheduler/cron is running.
+        // Runtime backstops: self-heal stale awaiting_pickup/overdue rows on
+        // read, regardless of whether the scheduler/cron is running.
         $this->reservationExpiryService->expireDueReservations(200);
+        $this->overdueService->flagDueOverdueBorrowings(200);
 
         $perPage = min(max((int) ($filters['per_page'] ?? 10), 1), 50);
         $status = $filters['status'] ?? null;
@@ -59,8 +64,9 @@ class MyBookService
 
     public function findDetail(User $user, string $borrowingId): Borrowing
     {
-        // Targeted runtime expiry backstop for this single row.
+        // Targeted runtime backstops for this single row.
         $this->reservationExpiryService->expireOne($borrowingId);
+        $this->overdueService->flagOne($borrowingId);
 
         $borrowing = Borrowing::query()
             ->with($this->borrowingRelations())
@@ -98,6 +104,16 @@ class MyBookService
             $this->attachComputedFields(collect([$borrowing]));
 
             $computedStatus = (string) $borrowing->getAttribute('computed_status');
+
+            // Explicit, specific message for the payment-required case —
+            // distinct from the generic "not currently borrowed" case below,
+            // so the Flutter UI can tell the member exactly why (and route
+            // them to the payment page instead of just retrying).
+            if ($computedStatus === Borrowing::WAITING_PAYMENT) {
+                throw ValidationException::withMessages([
+                    'borrowing_id' => ['Lunasi denda terlebih dahulu sebelum membuat QR pengembalian.'],
+                ]);
+            }
 
             if (! in_array($computedStatus, ['active', 'due_soon', 'overdue'], true)) {
                 throw ValidationException::withMessages([
@@ -329,7 +345,7 @@ class MyBookService
 
     private function finePerDay(): float
     {
-        return $this->appSettingService->getDecimal('fine_per_day', 1000);
+        return $this->fineCalculator->finePerDay();
     }
 
     private function generateQrCodeToken(): string

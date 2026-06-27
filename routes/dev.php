@@ -25,5 +25,7 @@ Route::middleware('dev_bypass')
     ->group(function () {
         Route::prefix('borrowings')->name('borrowings.')->group(function () {
             Route::post('{borrowing}/force-pickup', [DevBypassController::class, 'forcePickup'])->name('force-pickup');
+            // Alias under the literal /pickup path — same handler, see DevBypassController::pickup().
+            Route::post('{borrowing}/pickup', [DevBypassController::class, 'pickup'])->name('pickup');
         });
     });

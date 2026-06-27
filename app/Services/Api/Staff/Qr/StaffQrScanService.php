@@ -8,13 +8,12 @@ use App\Http\Resources\Api\Staff\StaffBookScanResource;
 use App\Models\BookItem;
 use App\Models\Borrowing;
 use App\Models\BorrowingItem;
-use App\Models\BorrowingPayment;
 use App\Models\BorrowingQrCode;
 use App\Models\Fine;
 use App\Models\User;
 use App\Services\ActivityLogService;
 use App\Services\Api\Borrowing\BorrowingReservationExpiryService;
-use App\Services\Api\Payment\BorrowingPaymentService;
+use App\Services\Api\Borrowing\FineCalculator;
 use App\Services\Api\Pickup\PickupBroadcastService;
 use App\Services\Api\Qr\QrPayloadService;
 use App\Services\Api\Staff\Borrowing\StaffBorrowingService;
@@ -33,9 +32,9 @@ class StaffQrScanService
         private readonly BorrowingReservationExpiryService $reservationExpiryService,
         private readonly StaffBorrowingService $staffBorrowingService,
         private readonly AppSettingService $appSettingService,
-        private readonly BorrowingPaymentService $borrowingPaymentService,
         private readonly ActivityLogService $activityLogService,
-        private readonly PickupBroadcastService $pickupBroadcastService
+        private readonly PickupBroadcastService $pickupBroadcastService,
+        private readonly FineCalculator $fineCalculator
     ) {
     }
 
@@ -314,6 +313,12 @@ class StaffQrScanService
                 ]);
             }
 
+            if ($borrowing->status === Borrowing::WAITING_PAYMENT) {
+                throw ValidationException::withMessages([
+                    'borrowing' => ['Lunasi denda terlebih dahulu sebelum mengembalikan buku.'],
+                ]);
+            }
+
             if ($borrowing->status !== Borrowing::ACTIVE) {
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini belum aktif atau sudah selesai.'],
@@ -334,8 +339,8 @@ class StaffQrScanService
                 'updated_at' => now(),
             ])->save();
 
-            $overdueDays = $this->overdueDays($borrowing);
-            $feeRules = $this->returnFeeRules();
+            $overdueDays = $this->fineCalculator->overdueDays($borrowing);
+            $feeRules = $this->fineCalculator->feeRules();
             $overdueAmount = $overdueDays * $feeRules['fine_per_day'] * $activeItems->count();
 
             return [
@@ -429,6 +434,12 @@ class StaffQrScanService
             $borrowingBranchId = $this->resolveBorrowingBranchId($borrowing);
             $this->staffAccessService->assertSameBranch($staff, $borrowingBranchId);
 
+            if ($borrowing->status === Borrowing::WAITING_PAYMENT) {
+                throw ValidationException::withMessages([
+                    'borrowing' => ['Lunasi denda terlebih dahulu sebelum mengembalikan buku.'],
+                ]);
+            }
+
             if ($borrowing->status !== Borrowing::ACTIVE) {
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini belum aktif atau sudah selesai.'],
@@ -456,8 +467,8 @@ class StaffQrScanService
                 ->get()
                 ->keyBy('id');
 
-            $overdueDays = $this->overdueDays($borrowing);
-            $feeRules = $this->returnFeeRules();
+            $overdueDays = $this->fineCalculator->overdueDays($borrowing);
+            $feeRules = $this->fineCalculator->feeRules();
             $fineRows = [];
             $returnedItems = [];
             $totalOverdueAmount = 0.0;
@@ -466,7 +477,7 @@ class StaffQrScanService
 
             foreach ($items as $item) {
                 $input = $submittedItems->get($item->id, []);
-                $condition = $this->normalizeReturnCondition((string) ($input['return_condition'] ?? 'good'));
+                $condition = $this->fineCalculator->normalizeReturnCondition((string) ($input['return_condition'] ?? 'good'));
                 $notes = $input['notes'] ?? null;
                 $bookItem = $bookItems->get($item->book_item_id);
 
@@ -491,7 +502,7 @@ class StaffQrScanService
                 ])->save();
 
                 $overdueAmount = $overdueDays * $feeRules['fine_per_day'];
-                $damageAmount = $this->damageFeeFor($condition, $feeRules);
+                $damageAmount = $this->fineCalculator->damageFeeFor($condition, $feeRules);
                 $lostAmount = $condition === 'lost' ? $feeRules['lost_fee'] : 0.0;
                 $itemFineAmount = $overdueAmount + $damageAmount + $lostAmount;
 
@@ -500,6 +511,12 @@ class StaffQrScanService
                 $totalLostAmount += $lostAmount;
 
                 if ($itemFineAmount > 0) {
+                    $fineType = match (true) {
+                        $lostAmount > 0 => Fine::TYPE_LOST,
+                        $damageAmount > 0 => Fine::TYPE_DAMAGE,
+                        default => Fine::TYPE_OVERDUE,
+                    };
+
                     $fineRows[] = Fine::query()->updateOrCreate(
                         ['borrowing_item_id' => $item->id],
                         [
@@ -508,7 +525,8 @@ class StaffQrScanService
                             'fine_amount' => $itemFineAmount,
                             'overdue_days' => $overdueDays,
                             'status' => Fine::UNPAID,
-                            'notes' => $this->fineNote($overdueDays, $overdueAmount, $damageAmount, $lostAmount, $condition),
+                            'fine_type' => $fineType,
+                            'notes' => $this->fineCalculator->fineNote($overdueDays, $overdueAmount, $damageAmount, $lostAmount, $condition),
                             'created_by' => $staff->id,
                             'updated_by' => $staff->id,
                         ]
@@ -561,43 +579,35 @@ class StaffQrScanService
                 'total_fine' => $totalFine,
             ]);
 
-            // Create Midtrans payment when fines exist.
-            $payment = null;
-            if ($paymentRequired) {
-                $fineCollection = collect($fineRows);
-
-                try {
-                    $payment = $this->borrowingPaymentService->createForBorrowing(
-                        borrowing: $borrowing,
-                        fines: $fineCollection,
-                        staff: $staff
-                    );
-                } catch (\Throwable $e) {
-                    // Payment creation failure must NOT roll back the return —
-                    // the books are already physically back. Log and surface the error
-                    // so staff can retry via the sync endpoint.
-                    Log::error('Gagal membuat pembayaran Midtrans setelah pengembalian.', [
-                        'borrowing_id' => $borrowing->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
+            // Payment creation is no longer triggered here — the member
+            // creates it themselves via POST /api/v1/payments/create when
+            // they open the borrowing detail page and see WAITING_PAYMENT
+            // (see App\Services\Api\Payment\BorrowingPaymentService and
+            // docs/payment-flow.md). This keeps payment-method choice in
+            // the member's hands, matching the Core API flow.
 
             $detail = $this->staffBorrowingService->findDetail($staff, $borrowing->id);
 
-            DB::afterCommit(function () use ($borrowing, $paymentRequired, $totalFine, $newBorrowingStatus) {
-                broadcast(new MyBookStatusUpdated(
-                    userId: $borrowing->user_id,
-                    payload: [
-                        'event' => $paymentRequired ? 'borrowing_waiting_payment' : 'borrowing_returned',
-                        'borrowing_id' => $borrowing->id,
-                        'borrowing_code' => $borrowing->borrowing_code,
-                        'status' => $newBorrowingStatus,
-                        'payment_required' => $paymentRequired,
-                        'fine_amount' => $totalFine,
-                    ]
-                ));
-            });
+            if ($paymentRequired) {
+                DB::afterCommit(function () use ($borrowing, $totalFine, $newBorrowingStatus) {
+                    broadcast(new MyBookStatusUpdated(
+                        userId: $borrowing->user_id,
+                        payload: [
+                            'event' => 'borrowing_waiting_payment',
+                            'borrowing_id' => $borrowing->id,
+                            'borrowing_code' => $borrowing->borrowing_code,
+                            'status' => $newBorrowingStatus,
+                            'payment_required' => true,
+                            'fine_amount' => $totalFine,
+                        ]
+                    ));
+                });
+            } else {
+                DB::afterCommit(function () use ($borrowing) {
+                    \App\Events\Return\ReturnSuccess::dispatch($borrowing->user_id, $borrowing->id, $borrowing->borrowing_code);
+                    Log::info('[WS] Broadcast sent: return.success', ['borrowing_id' => $borrowing->id, 'channel' => 'user.' . $borrowing->user_id]);
+                });
+            }
 
             return [
                 'borrowing' => $this->summary($detail),
@@ -616,18 +626,9 @@ class StaffQrScanService
                     'total_amount' => $totalFine,
                     'items_count' => count($fineRows),
                 ] : null,
-                'payment' => $payment ? [
-                    'id' => $payment->id,
-                    'midtrans_order_id' => $payment->midtrans_order_id,
-                    'snap_token' => $payment->snap_token,
-                    'payment_url' => $payment->payment_url,
-                    'total_amount' => (float) $payment->total_amount,
-                    'status' => $payment->status,
-                    'expired_at' => $payment->expired_at?->toISOString(),
-                ] : null,
                 'items' => $returnedItems,
                 'message' => $paymentRequired
-                    ? 'Pengembalian berhasil diproses. Silakan selesaikan pembayaran denda.'
+                    ? 'Pengembalian berhasil diproses. Silakan selesaikan pembayaran denda melalui aplikasi.'
                     : 'Pengembalian berhasil diproses tanpa biaya.',
             ];
         }, 3);
@@ -813,9 +814,9 @@ class StaffQrScanService
             ],
             'condition_options' => [
                 ['value' => 'good', 'label' => 'Baik', 'fee' => 0],
-                ['value' => 'minor_damage', 'label' => 'Rusak Ringan', 'fee' => $this->returnFeeRules()['minor_damage_fee']],
-                ['value' => 'major_damage', 'label' => 'Rusak Berat', 'fee' => $this->returnFeeRules()['major_damage_fee']],
-                ['value' => 'lost', 'label' => 'Hilang', 'fee' => $this->returnFeeRules()['lost_fee']],
+                ['value' => 'minor_damage', 'label' => 'Rusak Ringan', 'fee' => $this->fineCalculator->feeRules()['minor_damage_fee']],
+                ['value' => 'major_damage', 'label' => 'Rusak Berat', 'fee' => $this->fineCalculator->feeRules()['major_damage_fee']],
+                ['value' => 'lost', 'label' => 'Hilang', 'fee' => $this->fineCalculator->feeRules()['lost_fee']],
             ],
         ];
     }
@@ -836,39 +837,6 @@ class StaffQrScanService
         return $borrowing->branch_id ?: $borrowing->library_branch_id;
     }
 
-    private function overdueDays(Borrowing $borrowing): int
-    {
-        if (! $borrowing->due_date) {
-            return 0;
-        }
-
-        $today = now()->startOfDay();
-        $due = $borrowing->due_date->copy()->startOfDay();
-
-        return $due->isPast() && $today->gt($due)
-            ? (int) $due->diffInDays($today)
-            : 0;
-    }
-
-    private function returnFeeRules(): array
-    {
-        return [
-            'fine_per_day' => $this->appSettingService->getDecimal('fine_per_day', 1000),
-            'minor_damage_fee' => $this->appSettingService->getDecimal('minor_damage_fee', 5000),
-            'major_damage_fee' => $this->appSettingService->getDecimal('major_damage_fee', 25000),
-            'lost_fee' => $this->appSettingService->getDecimal('lost_fee', 75000),
-        ];
-    }
-
-    private function normalizeReturnCondition(string $condition): string
-    {
-        return match ($condition) {
-            'damaged' => 'major_damage',
-            'minor_damage', 'major_damage', 'lost', 'good' => $condition,
-            default => 'good',
-        };
-    }
-
     private function bookStatusAfterReturn(string $condition): string
     {
         return match ($condition) {
@@ -876,27 +844,6 @@ class StaffQrScanService
             'major_damage' => BookItem::DAMAGED,
             default => BookItem::AVAILABLE,
         };
-    }
-
-    private function damageFeeFor(string $condition, array $feeRules): float
-    {
-        return match ($condition) {
-            'minor_damage' => (float) $feeRules['minor_damage_fee'],
-            'major_damage' => (float) $feeRules['major_damage_fee'],
-            default => 0.0,
-        };
-    }
-
-    private function fineNote(int $overdueDays, float $overdueAmount, float $damageAmount, float $lostAmount, string $condition): string
-    {
-        return sprintf(
-            'Denda pengembalian. Kondisi: %s. Keterlambatan: %s hari, denda telat: %.2f, biaya kerusakan: %.2f, biaya hilang: %.2f.',
-            $condition,
-            $overdueDays,
-            $overdueAmount,
-            $damageAmount,
-            $lostAmount
-        );
     }
 
     private function findBookItem(string $branchId, ?string $bookItemId = null, ?string $barcode = null, ?string $itemCode = null): ?BookItem

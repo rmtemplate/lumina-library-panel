@@ -23,6 +23,22 @@ class DevBypassController extends ApiController
 
     public function forcePickup(Request $request, string $borrowing): JsonResponse
     {
+        return $this->doPickup($request, $borrowing);
+    }
+
+    /**
+     * POST /api/dev/borrowings/{id}/pickup — identical behavior to
+     * force-pickup above (same DevBypassService::forcePickup() call), kept
+     * as its own route/method only because that's the exact path this was
+     * requested under. No logic is duplicated.
+     */
+    public function pickup(Request $request, string $borrowing): JsonResponse
+    {
+        return $this->doPickup($request, $borrowing);
+    }
+
+    private function doPickup(Request $request, string $borrowing): JsonResponse
+    {
         $validated = $request->validate([
             'notes' => ['nullable', 'string', 'max:500'],
         ]);

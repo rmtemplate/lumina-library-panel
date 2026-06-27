@@ -12,6 +12,10 @@ Schedule::command('lumina:expire-borrowing-reservations --limit=100')
     ->everyMinute()
     ->withoutOverlapping();
 
+Schedule::command('lumina:flag-overdue-borrowings --limit=100')
+    ->everyMinute()
+    ->withoutOverlapping();
+
 // Run once a day at 08:00 WIB to dispatch due-date reminder jobs.
 Schedule::command('lumina:send-due-reminders')
     ->dailyAt('08:00')

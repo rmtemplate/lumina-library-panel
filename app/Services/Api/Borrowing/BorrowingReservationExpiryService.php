@@ -8,11 +8,18 @@ use App\Models\BookItem;
 use App\Models\Borrowing;
 use App\Models\BorrowingItem;
 use App\Models\BorrowingQrCode;
+use App\Models\Fine;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class BorrowingReservationExpiryService
 {
+    public function __construct(
+        private readonly FineCalculator $fineCalculator
+    ) {
+    }
+
     public function expireDueReservations(int $limit = 100): int
     {
         $borrowingIds = Borrowing::query()
@@ -109,10 +116,35 @@ class BorrowingReservationExpiryService
                 'updated_at' => now(),
             ])->save();
 
+            // No-show penalty fee — a flat, one-time amount (not accruing
+            // like an overdue fine), so it's safe to create it right now
+            // rather than computing it fresh later. Paying it lifts a
+            // user-level checkout block (see CheckoutService::checkout())
+            // — it does NOT resurrect this borrowing or its reserved items,
+            // which may already be claimed by someone else by the time it's
+            // paid. See docs/borrowing-lifecycle.md.
+            $noShowFee = $this->fineCalculator->pickupNoShowFee();
+
+            if ($noShowFee > 0) {
+                Fine::query()->create([
+                    'id' => (string) Str::uuid(),
+                    'user_id' => $borrowing->user_id,
+                    'branch_id' => $borrowing->branch_id ?: $borrowing->library_branch_id,
+                    'borrowing_id' => $borrowing->id,
+                    'borrowing_item_id' => null,
+                    'fine_amount' => $noShowFee,
+                    'overdue_days' => 0,
+                    'status' => Fine::UNPAID,
+                    'fine_type' => Fine::TYPE_PICKUP_NO_SHOW,
+                    'notes' => "Denda tidak mengambil pesanan: {$borrowing->borrowing_code}.",
+                ]);
+            }
+
             Log::info('[QR][EXPIRE] Borrowing auto-expired', [
                 'borrowing_id' => $borrowing->id,
                 'borrowing_code' => $borrowing->borrowing_code,
                 'reservation_expires_at' => $borrowing->reservation_expires_at?->toISOString(),
+                'no_show_fee' => $noShowFee,
             ]);
 
             DB::afterCommit(function () use ($borrowing, $expiredQrIds) {

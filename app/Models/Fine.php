@@ -17,14 +17,20 @@ class Fine extends Model
     public const PAID = 'paid';
     public const WAIVED = 'waived';
 
+    public const TYPE_OVERDUE = 'overdue';
+    public const TYPE_DAMAGE = 'damage';
+    public const TYPE_LOST = 'lost';
+    public const TYPE_PICKUP_NO_SHOW = 'pickup_no_show';
+
     protected $table = 'fines';
     public $incrementing = false;
     protected $keyType = 'string';
-    protected $fillable = ['user_id', 'branch_id', 'borrowing_item_id', 'fine_amount', 'overdue_days', 'status', 'paid_at', 'paid_amount', 'waived_reason', 'notes', 'created_by', 'updated_by'];
+    protected $fillable = ['user_id', 'branch_id', 'borrowing_id', 'borrowing_item_id', 'fine_amount', 'overdue_days', 'status', 'fine_type', 'paid_at', 'paid_amount', 'waived_reason', 'notes', 'created_by', 'updated_by'];
     protected $casts = ['fine_amount' => 'decimal:2', 'paid_amount' => 'decimal:2', 'paid_at' => 'datetime', 'created_at' => 'datetime', 'updated_at' => 'datetime', 'deleted_at' => 'datetime'];
 
     public function user(): BelongsTo { return $this->belongsTo(User::class, 'user_id'); }
     public function branch(): BelongsTo { return $this->belongsTo(LibraryBranch::class, 'branch_id'); }
+    public function borrowing(): BelongsTo { return $this->belongsTo(Borrowing::class, 'borrowing_id'); }
     public function borrowingItem(): BelongsTo { return $this->belongsTo(BorrowingItem::class, 'borrowing_item_id'); }
     public function payments(): HasMany { return $this->hasMany(FinePayment::class, 'fine_id'); }
 }

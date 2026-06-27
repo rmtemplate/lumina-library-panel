@@ -10,6 +10,7 @@ use App\Models\BorrowingItem;
 use App\Models\BorrowingQrCode;
 use App\Models\Cart;
 use App\Models\CartItem;
+use App\Models\Fine;
 use App\Models\LibraryBranch;
 use App\Models\User;
 use App\Services\Api\Qr\QrImageService;
@@ -35,6 +36,8 @@ class CheckoutService
     public function checkout(User $user, array $payload): array
     {
         return DB::transaction(function () use ($user, $payload) {
+            $this->assertNoUnpaidNoShowFine($user);
+
             $branchId = (string) $payload['branch_id'];
 
             $cartItemIds = collect($payload['cart_item_ids'] ?? [])
@@ -158,6 +161,28 @@ class CheckoutService
                 endDate: $endDate
             );
         }, 3);
+    }
+
+    /**
+     * Blocks new checkouts while the member has an unpaid pickup no-show
+     * penalty (see BorrowingReservationExpiryService::expireOne()) —
+     * paying it is what lifts this block. Deliberately does NOT try to
+     * resurrect the expired borrowing/its reserved items (those may
+     * already be gone) — see docs/borrowing-lifecycle.md.
+     */
+    private function assertNoUnpaidNoShowFine(User $user): void
+    {
+        $hasUnpaidNoShowFine = Fine::query()
+            ->where('user_id', $user->id)
+            ->where('fine_type', Fine::TYPE_PICKUP_NO_SHOW)
+            ->where('status', Fine::UNPAID)
+            ->exists();
+
+        if ($hasUnpaidNoShowFine) {
+            throw ValidationException::withMessages([
+                'borrowing_id' => ['Anda memiliki denda tidak mengambil pesanan yang belum dibayar. Selesaikan pembayaran sebelum melakukan checkout baru.'],
+            ]);
+        }
     }
 
     private function validateDates(Carbon $startDate, Carbon $endDate): void

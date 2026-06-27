@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\V1\Member\CartController;
 use App\Http\Controllers\Api\V1\Member\CheckoutController;
 use App\Http\Controllers\Api\V1\Member\MyBookController;
 use App\Http\Controllers\Api\V1\Member\NotificationController;
+use App\Http\Controllers\Api\V1\Member\PaymentController;
 use App\Http\Controllers\Api\V1\Member\QrController;
 use Illuminate\Support\Facades\Route;
 
@@ -80,6 +81,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('unread-count', [NotificationController::class, 'unreadCount'])->name('unread-count');
         Route::put('read-all', [NotificationController::class, 'markAllRead'])->name('read-all');
         Route::put('{notification}/read', [NotificationController::class, 'markRead'])->name('read');
+    });
+
+    // ── Payments (Midtrans Core API) ─────────────────────────────────────
+    Route::prefix('payments')->name('payments.')->group(function () {
+        Route::post('create', [PaymentController::class, 'create'])->name('create');
+        Route::get('history', [PaymentController::class, 'history'])->name('history');
+        Route::get('by-borrowing/{borrowing}', [PaymentController::class, 'showByBorrowing'])->name('by-borrowing');
+        Route::get('{payment}', [PaymentController::class, 'show'])->name('show');
+        Route::post('{payment}/refresh', [PaymentController::class, 'refresh'])->name('refresh');
     });
 
 });

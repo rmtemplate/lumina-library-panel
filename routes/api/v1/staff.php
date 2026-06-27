@@ -39,6 +39,9 @@ Route::middleware('auth:sanctum')
             Route::post('{borrowing}/payment/sync', [StaffPaymentController::class, 'sync'])->name('payment.sync');
         });
 
+        // Branch-scoped payments list (consolidated admin page)
+        Route::get('payments', [StaffPaymentController::class, 'index'])->name('payments.index');
+
         Route::prefix('qr')->name('qr.')->group(function () {
             Route::post('scan-pickup', [StaffQrScanController::class, 'scanPickup'])->name('scan-pickup');
 
