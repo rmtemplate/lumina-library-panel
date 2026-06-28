@@ -30,6 +30,7 @@ class User extends Authenticatable
         'branch_id', 'fullname', 'email', 'phone', 'password_hash', 'member_code',
         'avatar_path', 'avatar_is_external', 'profile_type_id', 'institution_name',
         'major_name', 'current_level', 'staff_position', 'staff_library_id',
+        'address', 'date_of_birth', 'gender',
         'is_verified', 'is_active', 'last_login_at', 'created_by', 'updated_by',
     ];
 
@@ -39,6 +40,7 @@ class User extends Authenticatable
         'avatar_is_external' => 'boolean',
         'is_verified' => 'boolean',
         'is_active' => 'boolean',
+        'date_of_birth' => 'date',
         'last_login_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',

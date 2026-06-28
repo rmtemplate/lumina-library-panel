@@ -102,9 +102,12 @@ class AccountController extends ApiController
      */
     public function updatePassword(UpdatePasswordRequest $request): JsonResponse
     {
+        $validated = $request->validated();
+
         $this->accountService->updatePassword(
             user: $request->user(),
-            payload: $request->validated()
+            payload: $validated,
+            logoutOtherSessions: (bool) ($validated['logout_other_sessions'] ?? false)
         );
 
         return ApiResponse::success(

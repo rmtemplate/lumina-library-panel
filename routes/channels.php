@@ -32,3 +32,18 @@ Broadcast::channel('borrowing.{borrowingId}', function ($user, string $borrowing
 
     return false;
 });
+
+/**
+ * Private channel for everything staff-dashboard-wide at a branch — borrow/
+ * return/registration events that aren't scoped to one specific user or
+ * borrowing. Every staff member assigned to that branch can subscribe.
+ */
+Broadcast::channel('branch.{branchId}', function ($user, string $branchId) {
+    if (! ($user->isStaff() || $user->isAdmin())) {
+        return false;
+    }
+
+    $userBranchId = $user->staff_library_id ?: $user->branch_id;
+
+    return (string) $userBranchId === (string) $branchId;
+});

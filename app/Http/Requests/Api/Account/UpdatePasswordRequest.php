@@ -16,6 +16,10 @@ class UpdatePasswordRequest extends FormRequest
         return [
             'current_password' => ['required', 'string'],
             'password'         => ['required', 'string', 'min:8', 'confirmed'],
+            // Optional — when true, every OTHER active session/token is
+            // revoked after a successful change (the session making this
+            // request stays logged in). See AccountService::updatePassword().
+            'logout_other_sessions' => ['sometimes', 'boolean'],
         ];
     }
 

@@ -80,13 +80,27 @@ class AccountProfileResource extends JsonResource
             'major_name'       => $user->major_name,
             'current_level'    => $user->current_level,
             'staff_position'   => $user->staff_position,
+            'address'          => $user->address,
+            'date_of_birth'    => $user->date_of_birth?->toDateString(),
+            'gender'           => $user->gender,
 
-            // Status
-            'is_verified'  => $user->is_verified,
-            'is_active'    => $user->is_active,
+            // Status — membership_status/stats are computed virtual
+            // attributes set by AccountService::attachComputedFields(),
+            // not real columns. Fall back gracefully if a caller ever
+            // passes a User that bypassed AccountService (shouldn't
+            // happen, but keeps this Resource safe to reuse elsewhere).
+            'is_verified'        => $user->is_verified,
+            'is_active'          => $user->is_active,
+            'membership_status'  => $user->membership_status ?? ($user->is_active ? 'active' : 'inactive'),
+            'stats' => $user->stats ?? [
+                'total_borrowed' => 0,
+                'active_borrowings' => 0,
+                'total_returned' => 0,
+            ],
 
             // Timestamps
             'last_login_at' => $user->last_login_at?->toISOString(),
+            'joined_at'     => $user->created_at?->toISOString(),
             'created_at'    => $user->created_at?->toISOString(),
             'updated_at'    => $user->updated_at?->toISOString(),
         ];

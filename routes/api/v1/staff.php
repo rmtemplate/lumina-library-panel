@@ -1,13 +1,16 @@
 <?php
 
 use App\Http\Controllers\Api\V1\Staff\StaffActivityLogController;
+use App\Http\Controllers\Api\V1\Staff\StaffBookController;
 use App\Http\Controllers\Api\V1\Staff\StaffBorrowingController;
 use App\Http\Controllers\Api\V1\Staff\StaffDashboardController;
+use App\Http\Controllers\Api\V1\Staff\StaffMemberController;
 use App\Http\Controllers\Api\V1\Staff\StaffNotificationController;
 use App\Http\Controllers\Api\V1\Staff\StaffPaymentController;
 use App\Http\Controllers\Api\V1\Staff\StaffQrScanController;
 use App\Http\Controllers\Api\V1\Staff\StaffRackController;
 use App\Http\Controllers\Api\V1\Staff\StaffReportController;
+use App\Http\Controllers\Api\V1\Staff\StaffUniversalScanController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -43,6 +46,10 @@ Route::middleware('auth:sanctum')
         Route::get('payments', [StaffPaymentController::class, 'index'])->name('payments.index');
 
         Route::prefix('qr')->name('qr.')->group(function () {
+            // Universal scanner — staff never picks a mode, backend
+            // auto-detects pickup/return/book from the decoded QR payload.
+            Route::post('scan', [StaffUniversalScanController::class, 'scan'])->name('scan');
+
             Route::post('scan-pickup', [StaffQrScanController::class, 'scanPickup'])->name('scan-pickup');
 
             // Preferred return flow: preview first, then confirm after physical inspection.
@@ -56,6 +63,25 @@ Route::middleware('auth:sanctum')
 
         Route::prefix('returns')->name('returns.')->group(function () {
             Route::post('confirm', [StaffQrScanController::class, 'confirmReturn'])->name('confirm');
+        });
+
+        // Staff-initiated borrowing (Borrow Cart confirm) — distinct from
+        // the member self-checkout + QR pickup flow above.
+        Route::post('borrowings', [StaffBorrowingController::class, 'create'])->name('borrowings.create');
+
+        // Member registration (walk-in onboarding) + lookup/search used by
+        // the Borrow Cart's member-identification step.
+        Route::prefix('members')->name('members.')->group(function () {
+            Route::post('/', [StaffMemberController::class, 'register'])->name('register');
+            Route::get('search', [StaffMemberController::class, 'search'])->name('search');
+            Route::get('lookup', [StaffMemberController::class, 'lookup'])->name('lookup');
+        });
+
+        // Book registration (catalog + physical copies) + manual search
+        // used by the Borrow Cart's "add book manually" step.
+        Route::prefix('books')->name('books.')->group(function () {
+            Route::post('/', [StaffBookController::class, 'register'])->name('register');
+            Route::get('search', [StaffBookController::class, 'search'])->name('search');
         });
 
         // Rack & book move management

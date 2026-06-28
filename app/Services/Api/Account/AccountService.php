@@ -2,8 +2,11 @@
 
 namespace App\Services\Api\Account;
 
+use App\Models\Borrowing;
+use App\Models\Fine;
 use App\Models\Role;
 use App\Models\User;
+use App\Models\UserSession;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
@@ -18,6 +21,44 @@ class AccountService
     public function getProfile(User $user): User
     {
         $user->loadMissing(['roles', 'profileType', 'branch', 'staffLibrary']);
+
+        return $this->attachComputedFields($user);
+    }
+
+    /**
+     * Attaches presentation-only computed fields (borrowing stats,
+     * membership status) as virtual attributes — never persisted, just
+     * read by AccountProfileResource. Centralized here (not in the
+     * Resource) so the counting logic has one home and isn't duplicated
+     * if another endpoint ever needs the same numbers.
+     */
+    private function attachComputedFields(User $user): User
+    {
+        $user->setAttribute('stats', [
+            'total_borrowed' => $user->borrowings()->count(),
+            'active_borrowings' => $user->borrowings()
+                ->whereIn('status', [Borrowing::ACTIVE, Borrowing::WAITING_PAYMENT])
+                ->count(),
+            'total_returned' => $user->borrowings()
+                ->whereIn('status', [Borrowing::RETURNED, Borrowing::RETURNED_WITH_FINE])
+                ->count(),
+        ]);
+
+        // A pickup_no_show fine blocks new checkouts at the user level (see
+        // CheckoutService) even though the borrowing itself is terminal —
+        // surfaced here so "Membership Status" reflects that restriction
+        // instead of just echoing the raw is_active flag.
+        $hasBlockingFine = Fine::query()
+            ->where('user_id', $user->id)
+            ->where('fine_type', Fine::TYPE_PICKUP_NO_SHOW)
+            ->where('status', Fine::UNPAID)
+            ->exists();
+
+        $user->setAttribute('membership_status', match (true) {
+            ! $user->is_active => 'inactive',
+            $hasBlockingFine => 'restricted',
+            default => 'active',
+        });
 
         return $user;
     }
@@ -41,6 +82,9 @@ class AccountService
             'institution_name',
             'major_name',
             'current_level',
+            'address',
+            'date_of_birth',
+            'gender',
         ];
 
         // staff_position hanya boleh diupdate oleh staff
@@ -48,12 +92,10 @@ class AccountService
             $allowedFields[] = 'staff_position';
         }
 
-        $updates = collect($payload)
-            ->only($allowedFields)
-            ->filter(fn ($value) => $value !== null || array_key_exists($allowedFields[array_search($value, $payload)], $payload))
-            ->toArray();
-
-        // Filter aman: ambil hanya field yang ada di payload dan ada di allowedFields
+        // Ambil hanya field yang ada di payload DAN ada di allowedFields —
+        // email, member_code, role, branch tidak pernah bisa lolos dari sini
+        // karena tidak pernah masuk allowedFields, terlepas dari apa yang
+        // dikirim client.
         $updates = array_intersect_key($payload, array_flip($allowedFields));
 
         if (! empty($updates)) {
@@ -62,7 +104,7 @@ class AccountService
 
         $user->refresh();
 
-        return $user;
+        return $this->attachComputedFields($user);
     }
 
     /**
@@ -89,7 +131,7 @@ class AccountService
 
         $user->refresh();
 
-        return $user;
+        return $this->attachComputedFields($user);
     }
 
     /**
@@ -109,7 +151,7 @@ class AccountService
 
         $user->refresh();
 
-        return $user;
+        return $this->attachComputedFields($user);
     }
 
     /**
@@ -117,23 +159,67 @@ class AccountService
      *
      * Rules:
      * - Verifikasi current_password terhadap password_hash.
+     * - Password baru tidak boleh sama dengan password lama.
      * - Update password_hash dengan Hash::make.
-     * - Tidak logout session yang ada.
+     * - Sesi yang sedang dipakai (current token) tetap aktif; sesi LAIN
+     *   ikut di-revoke jika $logoutOtherSessions true — sama seperti
+     *   ApiAuthenticationService::logoutAll(), tapi current token
+     *   dikecualikan agar request ini sendiri tidak ikut ter-revoke.
      *
-     * @throws ValidationException jika current_password salah
+     * @throws ValidationException jika current_password salah atau password
+     *                              baru sama dengan password lama
      */
-    public function updatePassword(User $user, array $payload): void
+    public function updatePassword(User $user, array $payload, bool $logoutOtherSessions = false): void
     {
-        // Verifikasi current password
         if (! Hash::check($payload['current_password'], $user->password_hash)) {
             throw ValidationException::withMessages([
                 'current_password' => ['Password lama tidak sesuai.'],
             ]);
         }
 
-        // Update password_hash
+        if (Hash::check($payload['password'], $user->password_hash)) {
+            throw ValidationException::withMessages([
+                'password' => ['Password baru tidak boleh sama dengan password lama.'],
+            ]);
+        }
+
         $user->update([
             'password_hash' => Hash::make($payload['password']),
+        ]);
+
+        if ($logoutOtherSessions) {
+            $this->revokeOtherSessions($user);
+        }
+    }
+
+    /**
+     * Revokes every Sanctum token EXCEPT the one used for the current
+     * request — same effect as ApiAuthenticationService::logoutAll() but
+     * scoped to "other devices" so the session that just changed the
+     * password isn't logged out by its own request.
+     */
+    private function revokeOtherSessions(User $user): void
+    {
+        $currentTokenId = $user->currentAccessToken()?->id;
+
+        $tokensQuery = $user->tokens();
+        if ($currentTokenId) {
+            $tokensQuery->where('id', '!=', $currentTokenId);
+        }
+
+        $tokensQuery->delete();
+
+        $sessionsQuery = UserSession::query()
+            ->where('user_id', $user->id)
+            ->where('is_active', true);
+
+        if ($currentTokenId) {
+            $sessionsQuery->where('personal_access_token_id', '!=', $currentTokenId);
+        }
+
+        $sessionsQuery->update([
+            'is_active' => false,
+            'last_activity_at' => now(),
         ]);
     }
 

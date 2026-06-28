@@ -4,6 +4,7 @@ namespace App\Services\Api\Borrowing;
 
 use App\Events\Borrowing\BorrowingOverdue;
 use App\Models\Borrowing;
+use App\Models\BorrowingPayment;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -72,6 +73,29 @@ class BorrowingOverdueService
             $overdueDays = $this->fineCalculator->overdueDays($borrowing);
 
             if ($overdueDays <= 0) {
+                return false;
+            }
+
+            // BUG FIX: due_date never changes once a borrowing is checked
+            // out, so "due_date < today" stays true forever once a loan is
+            // late — even after the member pays the overdue fine and
+            // markPaid() resets status back to ACTIVE so they can return
+            // the books. Without this guard, the very next read-path call
+            // to flagOne()/flagDueOverdueBorrowings() (which runs on EVERY
+            // MyBookService::findDetail()/paginate() call) immediately
+            // re-flags the same borrowing back to WAITING_PAYMENT, undoing
+            // the payment and re-blocking the Return QR action — this was
+            // the root cause of "payment shows Lunas but borrowing stays
+            // WAITING_PAYMENT". A PAID overdue_fine payment for this
+            // borrowing means this exact overdue period has already been
+            // settled, so skip re-flagging.
+            $alreadySettled = BorrowingPayment::query()
+                ->where('borrowing_id', $borrowing->id)
+                ->where('purpose', BorrowingPayment::PURPOSE_OVERDUE_FINE)
+                ->where('status', BorrowingPayment::PAID)
+                ->exists();
+
+            if ($alreadySettled) {
                 return false;
             }
 

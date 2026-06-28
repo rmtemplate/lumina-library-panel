@@ -20,6 +20,9 @@ class UpdateProfileRequest extends FormRequest
             'major_name'       => ['sometimes', 'nullable', 'string', 'max:100'],
             'current_level'    => ['sometimes', 'nullable', 'string', 'max:50'],
             'staff_position'   => ['sometimes', 'nullable', 'string', 'max:100'],
+            'address'          => ['sometimes', 'nullable', 'string', 'max:500'],
+            'date_of_birth'    => ['sometimes', 'nullable', 'date', 'before:today'],
+            'gender'           => ['sometimes', 'nullable', 'string', 'in:male,female,other'],
         ];
     }
 
@@ -35,6 +38,10 @@ class UpdateProfileRequest extends FormRequest
             'major_name.max'         => 'Nama jurusan maksimal 100 karakter.',
             'current_level.max'      => 'Tingkat/semester maksimal 50 karakter.',
             'staff_position.max'     => 'Jabatan staff maksimal 100 karakter.',
+            'address.max'            => 'Alamat maksimal 500 karakter.',
+            'date_of_birth.date'     => 'Tanggal lahir tidak valid.',
+            'date_of_birth.before'   => 'Tanggal lahir harus sebelum hari ini.',
+            'gender.in'              => 'Jenis kelamin tidak valid.',
         ];
     }
 }

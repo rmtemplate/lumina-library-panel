@@ -9,6 +9,7 @@ use App\Models\Borrowing;
 use App\Models\BorrowingItem;
 use App\Models\BorrowingPayment;
 use App\Models\Fine;
+use App\Models\Role;
 use App\Models\User;
 use App\Services\Api\Staff\Borrowing\StaffBorrowingService;
 use App\Services\Api\Staff\Support\StaffAccessService;
@@ -34,6 +35,53 @@ class StaffReportService
             'returns' => $this->returnReport($branchId, $branchColumn, $from, $to),
             'fines' => $this->fineReport($branchId, $from, $to),
             'books' => $this->bookReport($branchId, $from, $to),
+            'payments' => $this->paymentReport($branchColumn, $branchId, $from, $to),
+            'members' => $this->memberReport($branchId, $from, $to),
+        ];
+    }
+
+    /**
+     * "Payment Report" — Midtrans charge outcomes in the period, scoped to
+     * this branch's borrowings (BorrowingPayment has no branch_id column
+     * of its own).
+     */
+    private function paymentReport(string $branchColumn, string $branchId, $from, $to): array
+    {
+        $base = BorrowingPayment::query()
+            ->whereHas('borrowing', fn ($q) => $q->where($branchColumn, $branchId))
+            ->whereBetween('created_at', [$from, $to]);
+
+        $byStatus = (clone $base)
+            ->selectRaw('status, COUNT(*) as count')
+            ->groupBy('status')
+            ->pluck('count', 'status');
+
+        $totalPaidAmount = (clone $base)->where('status', BorrowingPayment::PAID)->sum('total_amount');
+
+        return [
+            'pending' => (int) ($byStatus[BorrowingPayment::PENDING] ?? 0),
+            'paid' => (int) ($byStatus[BorrowingPayment::PAID] ?? 0),
+            'expired' => (int) ($byStatus[BorrowingPayment::EXPIRED] ?? 0),
+            'failed' => (int) ($byStatus[BorrowingPayment::FAILED] ?? 0),
+            'cancelled' => (int) ($byStatus[BorrowingPayment::CANCELLED] ?? 0),
+            'total_paid_amount' => (float) $totalPaidAmount,
+        ];
+    }
+
+    /**
+     * "Member Report" — new walk-in + self-registrations in the period at
+     * this branch, plus a running total.
+     */
+    private function memberReport(string $branchId, $from, $to): array
+    {
+        $base = User::query()
+            ->whereHas('roles', fn ($q) => $q->where('code', Role::MEMBER))
+            ->where('branch_id', $branchId);
+
+        return [
+            'new_registrations_in_period' => (clone $base)->whereBetween('created_at', [$from, $to])->count(),
+            'total_members' => (clone $base)->count(),
+            'active_members' => (clone $base)->where('is_active', true)->count(),
         ];
     }
 
