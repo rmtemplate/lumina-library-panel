@@ -1,0 +1,183 @@
+name: lumina-library
+
+# ─────────────────────────────────────────────────────────────────────────
+# Lumina Library — production stack.
+#
+# All Laravel-facing services (app/queue/scheduler/reverb) share ONE image
+# (built once from the root Dockerfile) and differ only by CONTAINER_ROLE
+# — see docker/php/entrypoint.sh. This keeps the stack modular without
+# duplicating the Dockerfile four times.
+#
+# MySQL is included by default but fully optional — if you point DB_HOST
+# at an already-existing/managed database, comment out the `mysql` service
+# and its `depends_on`/volume entries (see docs/deployment.md).
+# ─────────────────────────────────────────────────────────────────────────
+
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: lumina-library-app:latest
+  env_file:
+    - .env
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks:
+    - internal
+  volumes:
+    - storage_public:/var/www/html/storage/app/public
+  restart: unless-stopped
+  logging: &default-logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ── Web (PHP-FPM) ──────────────────────────────────────────────────────
+  app:
+    <<: *app-image
+    container_name: lumina-app
+    environment:
+      CONTAINER_ROLE: app
+    healthcheck:
+      test: ["CMD", "sh", "-c", "SCRIPT_NAME=/ping SCRIPT_FILENAME=/ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # ── Nginx reverse proxy ────────────────────────────────────────────────
+  # Plain HTTP only (port 80) — TLS termination happens upstream (Nginx
+  # Proxy Manager / Cloudflare / your own certbot+nginx). See "SSL" in
+  # docs/deployment.md.
+  nginx:
+    build:
+      context: .
+      dockerfile: docker/nginx/Dockerfile
+    image: lumina-library-nginx:latest
+    container_name: lumina-nginx
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - storage_public:/var/www/html/storage/app/public:ro
+    networks:
+      - internal
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ── Queue worker ───────────────────────────────────────────────────────
+  queue:
+    <<: *app-image
+    container_name: lumina-queue
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CONTAINER_ROLE: queue
+    healthcheck:
+      test: ["CMD-SHELL", "supervisorctl -c /etc/supervisor/queue.conf status | grep -q RUNNING"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── Scheduler (replaces VPS crontab — see docker/supervisor/scheduler.conf) ─
+  scheduler:
+    <<: *app-image
+    container_name: lumina-scheduler
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CONTAINER_ROLE: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "supervisorctl -c /etc/supervisor/scheduler.conf status | grep -q RUNNING"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── Laravel Reverb (WebSocket server) ─────────────────────────────────
+  reverb:
+    <<: *app-image
+    container_name: lumina-reverb
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CONTAINER_ROLE: reverb
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ── MySQL ──────────────────────────────────────────────────────────────
+  # OPTIONAL — remove this service (and the `mysql_data` volume below) if
+  # DB_HOST in .env already points at an external/managed database.
+  mysql:
+    image: mysql:8.0
+    container_name: lumina-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/conf.d:/etc/mysql/conf.d:ro
+    networks:
+      - internal
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # ── Redis (cache, sessions, queue, Reverb scaling channel) ────────────
+  redis:
+    image: redis:7-alpine
+    container_name: lumina-redis
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    networks:
+      - internal
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+networks:
+  internal:
+    driver: bridge
+    # Set `external: true` (and add a matching top-level `name:`) instead
+    # if Nginx Proxy Manager runs as its own Docker Compose stack and needs
+    # to join this same network directly — see docs/deployment.md "SSL".
+
+volumes:
+  mysql_data:
+  redis_data:
+  storage_public:

@@ -84,8 +84,14 @@ Route::middleware('auth:sanctum')
             Route::get('search', [StaffBookController::class, 'search'])->name('search');
         });
 
-        // Rack & book move management
-        Route::get('racks', [StaffRackController::class, 'index'])->name('racks.index');
+        // Rack & book move management — CRUD for racks + per-item move/history
+        Route::prefix('racks')->name('racks.')->group(function () {
+            Route::get('/', [StaffRackController::class, 'index'])->name('index');
+            Route::post('/', [StaffRackController::class, 'store'])->name('store');
+            Route::get('{rack}', [StaffRackController::class, 'show'])->name('show');
+            Route::put('{rack}', [StaffRackController::class, 'update'])->name('update');
+            Route::delete('{rack}', [StaffRackController::class, 'destroy'])->name('destroy');
+        });
         Route::prefix('book-items')->name('book-items.')->group(function () {
             Route::get('{bookItem}/rack', [StaffRackController::class, 'showBookItemRack'])->name('rack');
             Route::post('{bookItem}/move', [StaffRackController::class, 'move'])->name('move');

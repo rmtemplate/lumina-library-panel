@@ -13,6 +13,7 @@ class StaffDashboardResource extends JsonResource
             'staff' => $this['staff'] ?? null,
             'branch' => $this['branch'] ?? null,
             'summary' => $this['summary'] ?? [],
+            'charts' => $this['charts'] ?? [],
             'recent_borrowings' => StaffBorrowingResource::collection(collect($this['recent_borrowings'] ?? []))->resolve($request),
         ];
     }

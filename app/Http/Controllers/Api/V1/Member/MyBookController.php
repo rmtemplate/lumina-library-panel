@@ -52,6 +52,7 @@ class MyBookController extends ApiController
             user: $request->user(),
             borrowingId: $borrowing
         );
+        
 
         return ApiResponse::success(
             data: new MyBookDetailResource($detail),

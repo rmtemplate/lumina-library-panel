@@ -216,7 +216,8 @@ class DevBypassService
             'return_date' => $borrowing->return_date?->toDateString(),
             'days_remaining' => (int) ($borrowing->getAttribute('days_remaining') ?? 0),
             'overdue_days' => (int) ($borrowing->getAttribute('overdue_days') ?? 0),
-            'estimated_fine' => (float) ($borrowing->getAttribute('estimated_fine') ?? 0),
+            'fine_per_day' => (float) ($borrowing->getAttribute('fine_per_day') ?? 0),
+            'total_fine' => (float) ($borrowing->getAttribute('total_fine') ?? 0),
             'pickup_method' => $borrowing->pickup_method,
         ];
     }

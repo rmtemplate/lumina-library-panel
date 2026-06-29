@@ -202,7 +202,8 @@ class MyBookService
                     'due_date' => $borrowing->due_date,
                     'days_remaining' => (int) $borrowing->getAttribute('days_remaining'),
                     'overdue_days' => (int) $borrowing->getAttribute('overdue_days'),
-                    'estimated_fine' => (float) $borrowing->getAttribute('estimated_fine'),
+                    'fine_per_day' => (float) $borrowing->getAttribute('fine_per_day'),
+                    'total_fine' => (float) $borrowing->getAttribute('total_fine'),
                 ],
                 'qr' => [
                     'id' => $qr->id,
@@ -261,14 +262,6 @@ class MyBookService
             $daysRemaining = max(0, $rawDaysRemaining);
             $overdueDays = $rawDaysRemaining < 0 ? abs($rawDaysRemaining) : 0;
 
-            $borrowedItemsCount = $borrowing->relationLoaded('items')
-                ? $borrowing->items
-                    ->whereIn('status', ['active', 'pending'])
-                    ->count()
-                : 1;
-
-            $borrowedItemsCount = max($borrowedItemsCount, 1);
-
             $computedStatus = $this->computeStatus(
                 rawStatus: (string) $borrowing->status,
                 daysRemaining: $daysRemaining,
@@ -276,14 +269,21 @@ class MyBookService
                 reminderDays: $reminderDays
             );
 
-            $estimatedFine = $computedStatus === 'overdue'
-                ? $overdueDays * $finePerDay * $borrowedItemsCount
-                : 0;
+            // isLiveOverdueFineApplicable() is the single guard for "show
+            // a live fine now" — checks due_date, not DB status, so it
+            // stays true across both the 'overdue' computed display state
+            // AND the 'waiting_payment' DB state that BorrowingOverdueService
+            // transitions to. Without it, total_fine silently drops to 0
+            // the instant the borrowing is auto-flagged overdue, because
+            // computedStatus is no longer 'overdue'.
+            $totalFine = $this->fineCalculator->isLiveOverdueFineApplicable($borrowing)
+                ? $this->fineCalculator->overdueFineAmount($borrowing)
+                : 0.0;
 
             $borrowing->setAttribute('computed_status', $computedStatus);
             $borrowing->setAttribute('days_remaining', $daysRemaining);
             $borrowing->setAttribute('overdue_days', $overdueDays);
-            $borrowing->setAttribute('estimated_fine', $estimatedFine);
+            $borrowing->setAttribute('total_fine', $totalFine);
             $borrowing->setAttribute('fine_per_day', $finePerDay);
             $borrowing->setAttribute('return_reminder_days', $reminderDays);
         });
@@ -311,6 +311,8 @@ class MyBookService
             return 'active';
         }
 
+        // dd($rawStatus, $daysRemaining, $overdueDays, $reminderDays, 'Unexpected raw status for MyBookService::computeStatus()');
+
         return $rawStatus;
     }
 
@@ -321,6 +323,7 @@ class MyBookService
             'items.book.category',
             'items.bookItem.rack',
             'items.bookItem.branch',
+            'payments',
         ];
     }
 

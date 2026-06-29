@@ -23,7 +23,8 @@ class StaffBorrowingResource extends JsonResource
             'reservation_expires_at' => $this->reservation_expires_at?->toISOString(),
             'days_remaining' => (int) ($this->days_remaining ?? 0),
             'overdue_days' => (int) ($this->overdue_days ?? 0),
-            'estimated_fine' => (float) ($this->estimated_fine ?? 0),
+            'fine_per_day' => (float) ($this->fine_per_day ?? 0),
+            'total_fine' => (float) ($this->total_fine ?? 0),
             'member' => [
                 'id' => $user?->id,
                 'fullname' => $user?->fullname,
@@ -43,7 +44,8 @@ class StaffBorrowingResource extends JsonResource
             'actions' => [
                 'can_scan_pickup' => ($this->computed_status ?? $this->status) === 'awaiting_pickup',
                 'can_scan_return' => in_array(($this->computed_status ?? $this->status), ['active', 'overdue'], true),
-                'payment_required' => (float) ($this->estimated_fine ?? 0) > 0,
+                'payment_required' => ($this->computed_status ?? $this->status) === 'waiting_payment'
+                    || (float) ($this->total_fine ?? 0) > 0,
             ],
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),

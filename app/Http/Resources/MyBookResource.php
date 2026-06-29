@@ -24,8 +24,8 @@ class MyBookResource extends JsonResource
 
             'days_remaining' => (int) ($this->days_remaining ?? 0),
             'overdue_days' => (int) ($this->overdue_days ?? 0),
-            'estimated_fine' => (float) ($this->estimated_fine ?? 0),
             'fine_per_day' => (float) ($this->fine_per_day ?? 0),
+            'total_fine' => (float) ($this->total_fine ?? 0),
 
             'branch' => [
                 'id' => $branch?->id,

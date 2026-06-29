@@ -1,0 +1,47 @@
+# Never send these into the Docker build context — keeps builds fast and
+# prevents secrets/dev artifacts from ever reaching an image layer.
+
+.git
+.github
+.gitignore
+
+vendor
+node_modules
+
+.env
+.env.*
+!.env.production.example
+
+storage/app/public/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/testing/*
+storage/framework/views/*
+storage/logs/*
+!storage/**/.gitignore
+
+bootstrap/cache/*.php
+
+tests
+docs
+*.md
+!README.md
+
+.phpunit.cache
+.phpunit.result.cache
+.idea
+.vscode
+.vagrant
+.nova
+.zed
+.cursor
+.codex
+
+# NOTE: docker/, Dockerfile(s), and docker-compose.yml are intentionally
+# NOT ignored here — docker/php/Dockerfile and docker/nginx/Dockerfile
+# both COPY files from docker/ during the build, so excluding it would
+# break the build.
+
+*.log
+Thumbs.db
+.DS_Store

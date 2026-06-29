@@ -89,6 +89,7 @@ class StaffBorrowingService
                 'items.book.category',
                 'items.bookItem.rack',
                 'items.bookItem.branch',
+                'payments',
             ])
             ->where($branchColumn, $branchId);
     }
@@ -139,19 +140,22 @@ class StaffBorrowingService
             $rawDaysRemaining = (int) $today->diffInDays($dueDate, false);
             $daysRemaining = max(0, $rawDaysRemaining);
             $overdueDays = $rawDaysRemaining < 0 ? abs($rawDaysRemaining) : 0;
-            $activeItemsCount = $borrowing->relationLoaded('items')
-                ? max($borrowing->items->whereIn('status', ['active', 'pending'])->count(), 1)
-                : 1;
 
             $computedStatus = $this->computeStatus((string) $borrowing->status, $overdueDays);
-            $estimatedFine = $computedStatus === 'overdue'
-                ? $overdueDays * $finePerDay * $activeItemsCount
-                : 0;
+
+            // isLiveOverdueFineApplicable() — see FineCalculator and
+            // MyBookService::attachComputedFields() for why this replaces
+            // the old `$computedStatus === 'overdue'` guard, which silently
+            // zeroed total_fine the moment the borrowing was auto-flagged
+            // WAITING_PAYMENT by BorrowingOverdueService.
+            $totalFine = $this->fineCalculator->isLiveOverdueFineApplicable($borrowing)
+                ? $this->fineCalculator->overdueFineAmount($borrowing)
+                : 0.0;
 
             $borrowing->setAttribute('computed_status', $computedStatus);
             $borrowing->setAttribute('days_remaining', $daysRemaining);
             $borrowing->setAttribute('overdue_days', $overdueDays);
-            $borrowing->setAttribute('estimated_fine', $estimatedFine);
+            $borrowing->setAttribute('total_fine', $totalFine);
             $borrowing->setAttribute('fine_per_day', $finePerDay);
         });
     }

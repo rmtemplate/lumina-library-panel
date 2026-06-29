@@ -17,7 +17,8 @@ class MyBookDetailResource extends MyBookResource
             'return_info' => [
                 'is_overdue' => (int) ($this->overdue_days ?? 0) > 0,
                 'overdue_days' => (int) ($this->overdue_days ?? 0),
-                'estimated_fine' => (float) ($this->estimated_fine ?? 0),
+                'fine_per_day' => (float) ($this->fine_per_day ?? 0),
+                'total_fine' => (float) ($this->total_fine ?? 0),
                 'message' => $this->resolveReturnMessage(),
             ],
         ];

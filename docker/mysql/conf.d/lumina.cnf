@@ -1,0 +1,23 @@
+# Lumina Library — MySQL tuning for a small/medium VPS.
+# Mounted read-only into the mysql container at /etc/mysql/conf.d/.
+
+[mysqld]
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+max_allowed_packet = 64M
+
+# Conservative defaults for a 1-2 vCPU / 2-4GB RAM VPS. Raise
+# innodb_buffer_pool_size (rule of thumb: ~50-70% of RAM dedicated to
+# MySQL) if the VPS has more memory to spare — see docs/deployment.md
+# "Troubleshooting".
+innodb_buffer_pool_size = 256M
+max_connections = 100
+
+# Slow query log goes nowhere by default — Docker logs are for
+# application/service stdout, not a query-tuning workflow. Flip this on
+# temporarily (and mount a volume for it) only when actively diagnosing
+# a performance issue.
+slow_query_log = 0
+
+[client]
+default-character-set = utf8mb4

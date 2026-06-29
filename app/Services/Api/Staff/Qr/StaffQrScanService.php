@@ -341,7 +341,12 @@ class StaffQrScanService
 
             $overdueDays = $this->fineCalculator->overdueDays($borrowing);
             $feeRules = $this->fineCalculator->feeRules();
-            $overdueAmount = $overdueDays * $feeRules['fine_per_day'] * $activeItems->count();
+            // Delegates to FineCalculator instead of re-deriving
+            // overdueDays * fine_per_day * itemCount inline — see
+            // MyBookService::attachComputedFields() for why that pattern
+            // was a bug (divergent item-counting across call sites), not
+            // just a naming issue.
+            $totalFine = $this->fineCalculator->overdueFineAmount($borrowing);
 
             return [
                 'return_review' => [
@@ -358,7 +363,8 @@ class StaffQrScanService
                     'borrow_date' => $borrowing->borrow_date?->toDateString(),
                     'due_date' => $borrowing->due_date?->toDateString(),
                     'overdue_days' => $overdueDays,
-                    'estimated_overdue_fine' => $overdueAmount,
+                    'fine_per_day' => $feeRules['fine_per_day'],
+                    'total_fine' => $totalFine,
                 ],
                 'member' => [
                     'id' => $borrowing->user?->id,
@@ -878,7 +884,8 @@ class StaffQrScanService
             'return_date' => $borrowing->return_date?->toDateString(),
             'days_remaining' => (int) ($borrowing->days_remaining ?? 0),
             'overdue_days' => (int) ($borrowing->overdue_days ?? 0),
-            'estimated_fine' => (float) ($borrowing->estimated_fine ?? 0),
+            'fine_per_day' => (float) ($borrowing->fine_per_day ?? 0),
+            'total_fine' => (float) ($borrowing->total_fine ?? 0),
         ];
     }
 }

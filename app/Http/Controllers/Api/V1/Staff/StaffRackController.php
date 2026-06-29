@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1\Staff;
 
 use App\Http\Controllers\Api\ApiController;
 use App\Http\Requests\Api\Staff\StaffMoveBookRequest;
+use App\Http\Requests\Api\Staff\StaffRackRequest;
 use App\Models\BookMoveHistory;
 use App\Services\Api\Staff\Rack\StaffRackService;
 use Illuminate\Http\JsonResponse;
@@ -18,13 +19,57 @@ class StaffRackController extends ApiController
 
     /**
      * GET /api/v1/staff/racks
-     * List all active racks in the staff's branch.
+     * List all active racks in the staff's branch, with book counts.
      */
     public function index(Request $request): JsonResponse
     {
         $racks = $this->rackService->listRacks($request->user());
 
         return $this->success(data: $racks, message: 'Data rak berhasil diambil.', code: 'RACKS_FOUND');
+    }
+
+    /**
+     * POST /api/v1/staff/racks
+     * Create a new rack in the staff's branch.
+     */
+    public function store(StaffRackRequest $request): JsonResponse
+    {
+        $rack = $this->rackService->createRack($request->user(), $request->validated());
+
+        return $this->success(data: $rack, message: 'Rak berhasil dibuat.', code: 'RACK_CREATED', httpCode: 201);
+    }
+
+    /**
+     * GET /api/v1/staff/racks/{rack}
+     * Rack detail with books inside it.
+     */
+    public function show(Request $request, string $rackId): JsonResponse
+    {
+        $data = $this->rackService->showRack($request->user(), $rackId);
+
+        return $this->success(data: $data, message: 'Detail rak berhasil diambil.', code: 'RACK_FOUND');
+    }
+
+    /**
+     * PUT /api/v1/staff/racks/{rack}
+     * Update rack metadata.
+     */
+    public function update(StaffRackRequest $request, string $rackId): JsonResponse
+    {
+        $rack = $this->rackService->updateRack($request->user(), $rackId, $request->validated());
+
+        return $this->success(data: $rack, message: 'Rak berhasil diperbarui.', code: 'RACK_UPDATED');
+    }
+
+    /**
+     * DELETE /api/v1/staff/racks/{rack}
+     * Deactivate (soft-delete) a rack.
+     */
+    public function destroy(Request $request, string $rackId): JsonResponse
+    {
+        $this->rackService->deleteRack($request->user(), $rackId);
+
+        return $this->success(data: null, message: 'Rak berhasil dihapus.', code: 'RACK_DELETED');
     }
 
     /**
