@@ -8,6 +8,7 @@ use BaconQrCode\Encoder\Encoder;
 use GdImage;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 /**
  * Renders QR codes as PNG.
@@ -40,27 +41,50 @@ class QrImageService
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
         );
 
-        Log::debug('[QR][BACKEND] Generating QR PNG', [
-            'payload_length' => strlen($rawPayload),
-        ]);
+        return $this->dataUriFromText($rawPayload);
+    }
 
-        $png = $this->renderPng($rawPayload);
+    /**
+     * Renders an arbitrary string (e.g. a book item_code/barcode) as a PNG
+     * QR with the same style as the borrowing QRs — error-correction H, a
+     * centered logo in a rounded white box. Returns the raw PNG bytes.
+     *
+     * Used for printable physical-book labels: those are scanned by the
+     * Universal Scanner's raw item_code/barcode fallback
+     * (StaffQrScanService::findBookItem), so the QR encodes the bare code
+     * rather than a signed JSON payload.
+     */
+    public function pngFromText(string $content): string
+    {
+        $png = $this->renderPng($content);
 
         $logoPath = public_path((string) config('lumina.qr.logo_path'));
         if (is_file($logoPath)) {
             $png = $this->injectLogoToPng($png, $logoPath);
         }
 
-        $base64 = base64_encode($png);
+        return $png;
+    }
 
-        Log::debug('[QR][BACKEND] PNG generation result', [
-            'format' => 'png',
-            'base64_length' => strlen($base64),
-            'base64_preview' => substr($base64, 0, 50),
-            'png_success' => true,
-        ]);
+    /** Base64 `data:image/png` URI wrapper around [pngFromText] for inline preview/print. */
+    public function dataUriFromText(string $content): string
+    {
+        return 'data:image/png;base64,' . base64_encode($this->pngFromText($content));
+    }
 
-        return 'data:image/png;base64,' . $base64;
+    /**
+     * Vector (SVG) variant of the QR for the same content. Pure-PHP SVG
+     * backend (no Imagick needed) at error-correction H. No logo overlay —
+     * the SVG writer can't composite the raster logo, so this is the plain
+     * scalable code, offered as a best-effort "vector quality" download.
+     */
+    public function svgFromText(string $content): string
+    {
+        return (string) QrCode::format('svg')
+            ->errorCorrection('H')
+            ->size(self::SIZE)
+            ->margin(self::MARGIN_MODULES)
+            ->generate($content);
     }
 
     /**

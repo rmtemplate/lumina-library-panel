@@ -27,8 +27,18 @@ class QrPayloadService
             'user_id' => $data['user_id'] ?? null,
             'branch_id' => $data['branch_id'] ?? null,
 
+            // Book QR fields — present only for permanent physical-book labels.
+            // StaffQrScanService::scanBook() resolves a copy from these via
+            // findBookItem(); they are array_filtered out for borrowing QRs.
+            'book_item_id' => $data['book_item_id'] ?? null,
+            'item_code' => $data['item_code'] ?? null,
+            'barcode' => $data['barcode'] ?? null,
+
             'iat' => now()->timestamp,
-            'exp' => $data['expires_at']->timestamp,
+            // Book QR is permanent: when no expires_at is supplied, `exp` is
+            // omitted entirely and verify() never expires it. Borrowing
+            // pickup/return still pass expires_at and keep their expiry.
+            'exp' => isset($data['expires_at']) ? $data['expires_at']->timestamp : null,
             'nonce' => (string) Str::uuid(),
         ];
 

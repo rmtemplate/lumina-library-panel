@@ -5,6 +5,7 @@ use App\Http\Controllers\Admin\BannerController;
 use App\Http\Controllers\Admin\BookCategoryController;
 use App\Http\Controllers\Admin\BookController;
 use App\Http\Controllers\Admin\BookItemController;
+use App\Http\Controllers\Admin\BookItemQrController;
 use App\Http\Controllers\Admin\BorrowingController;
 use App\Http\Controllers\Admin\DashboardController;
 use App\Http\Controllers\Admin\FineController;
@@ -28,6 +29,14 @@ Route::middleware(['auth', 'admin'])
 
         Route::resource('books', BookController::class);
         Route::patch('books/{book}/toggle-status', [BookController::class, 'toggleStatus'])->name('books.toggle-status');
+        // QR labels for physical copies — bulk routes first so the literal
+        // `qr` segment is never captured as a {bookItem} binding.
+        Route::post('book-items/qr/bulk/print', [BookItemQrController::class, 'bulkPrint'])->name('book-items.qr.bulk-print');
+        Route::post('book-items/qr/bulk/zip', [BookItemQrController::class, 'bulkZip'])->name('book-items.qr.bulk-zip');
+        Route::get('book-items/{bookItem}/qr', [BookItemQrController::class, 'preview'])->name('book-items.qr.preview');
+        Route::get('book-items/{bookItem}/qr/png', [BookItemQrController::class, 'png'])->name('book-items.qr.png');
+        Route::get('book-items/{bookItem}/qr/svg', [BookItemQrController::class, 'svg'])->name('book-items.qr.svg');
+        Route::get('book-items/{bookItem}/qr/print', [BookItemQrController::class, 'print'])->name('book-items.qr.print');
         Route::resource('book-items', BookItemController::class)->except(['show']);
         Route::resource('branches', LibraryBranchController::class);
         Route::resource('racks', RackController::class)->except(['show']);
