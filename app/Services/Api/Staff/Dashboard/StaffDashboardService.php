@@ -92,7 +92,7 @@ class StaffDashboardService
             ->count();
 
         $recentBorrowings = $this->staffBorrowingService->baseQuery($branch->id)
-            ->whereIn('status', ['awaiting_pickup', 'active', 'returned', 'returned_with_fine'])
+            ->whereIn('status', ['awaiting_pickup', 'active', 'ready_for_return', 'returned', 'returned_with_fine'])
             ->latest('created_at')
             ->limit(5)
             ->get();
@@ -144,6 +144,7 @@ class StaffDashboardService
         $rows = DB::table('borrowing_items')
             ->join('borrowings', 'borrowings.id', '=', 'borrowing_items.borrowing_id')
             ->join('books', 'books.id', '=', 'borrowing_items.book_id')
+            ->leftJoin('book_categories', 'book_categories.id', '=', 'books.category_id')
             ->where(function ($q) use ($branchId) {
                 $q->where('borrowings.library_branch_id', $branchId)
                   ->orWhere('borrowings.branch_id', $branchId);
@@ -156,9 +157,10 @@ class StaffDashboardService
                 'books.author',
                 'books.cover_path',
                 'books.cover_is_external',
+                'book_categories.name as category_name',
                 DB::raw('COUNT(*) as borrow_count')
             )
-            ->groupBy('books.id', 'books.title', 'books.author', 'books.cover_path', 'books.cover_is_external')
+            ->groupBy('books.id', 'books.title', 'books.author', 'books.cover_path', 'books.cover_is_external', 'book_categories.id', 'book_categories.name')
             ->orderByDesc('borrow_count')
             ->limit(5)
             ->get();
@@ -179,6 +181,7 @@ class StaffDashboardService
                 'id' => $row->id,
                 'title' => $row->title,
                 'author' => $row->author,
+                'category' => $row->category_name,
                 'cover_url' => $coverUrl,
                 'borrow_count' => (int) $row->borrow_count,
                 'available_count' => $availableCount,

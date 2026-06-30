@@ -115,7 +115,7 @@ class MyBookService
                 ]);
             }
 
-            if (! in_array($computedStatus, ['active', 'due_soon', 'overdue'], true)) {
+            if (! in_array($computedStatus, ['active', 'due_soon', 'overdue', 'ready_for_return'], true)) {
                 throw ValidationException::withMessages([
                     'borrowing_id' => ['QR pengembalian hanya bisa dibuat untuk buku yang sedang dipinjam.'],
                 ]);

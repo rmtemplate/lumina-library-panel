@@ -21,6 +21,7 @@ class DatabaseSeeder extends Seeder
             StudyProgramSeeder::class,
             BookSeeder::class,
             BookItemSeeder::class,
+            OpenLibraryBookSeeder::class,
             BookRackAssignmentSeeder::class,
             BookMoveHistorySeeder::class,
             CartSeeder::class,

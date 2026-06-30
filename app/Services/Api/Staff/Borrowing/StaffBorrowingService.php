@@ -86,6 +86,7 @@ class StaffBorrowingService
                 'user.roles',
                 'branch',
                 'libraryBranch',
+                'approvedBy',
                 'items.book.category',
                 'items.bookItem.rack',
                 'items.bookItem.branch',
@@ -105,7 +106,7 @@ class StaffBorrowingService
             'waiting_payment' => $query->where('status', 'waiting_payment'),
             'returned' => $query->whereIn('status', ['returned', 'returned_with_fine']),
             default => $query->whereIn('status', [
-                'awaiting_pickup', 'active', 'waiting_payment', 'returned', 'returned_with_fine',
+                'awaiting_pickup', 'active', 'ready_for_return', 'waiting_payment', 'returned', 'returned_with_fine',
             ]),
         };
     }

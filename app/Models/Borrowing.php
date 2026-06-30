@@ -17,6 +17,7 @@ class Borrowing extends Model
     public const PENDING = 'pending';
     public const AWAITING_PICKUP = 'awaiting_pickup';
     public const ACTIVE = 'active';
+    public const READY_FOR_RETURN = 'ready_for_return';
     public const RETURNED = 'returned';
     public const RETURNED_WITH_FINE = 'returned_with_fine';
     public const WAITING_PAYMENT = 'waiting_payment';

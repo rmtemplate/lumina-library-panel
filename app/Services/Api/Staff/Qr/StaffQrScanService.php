@@ -319,7 +319,7 @@ class StaffQrScanService
                 ]);
             }
 
-            if ($borrowing->status !== Borrowing::ACTIVE) {
+            if (! in_array($borrowing->status, [Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN], true)) {
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini belum aktif atau sudah selesai.'],
                 ]);
@@ -446,7 +446,7 @@ class StaffQrScanService
                 ]);
             }
 
-            if ($borrowing->status !== Borrowing::ACTIVE) {
+            if (! in_array($borrowing->status, [Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN], true)) {
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini belum aktif atau sudah selesai.'],
                 ]);

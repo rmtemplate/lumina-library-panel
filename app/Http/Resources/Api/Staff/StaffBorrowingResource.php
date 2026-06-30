@@ -43,7 +43,7 @@ class StaffBorrowingResource extends JsonResource
             'latest_qr' => $this->latest_qr,
             'actions' => [
                 'can_scan_pickup' => ($this->computed_status ?? $this->status) === 'awaiting_pickup',
-                'can_scan_return' => in_array(($this->computed_status ?? $this->status), ['active', 'overdue'], true),
+                'can_scan_return' => in_array(($this->computed_status ?? $this->status), ['active', 'overdue', 'ready_for_return'], true),
                 'payment_required' => ($this->computed_status ?? $this->status) === 'waiting_payment'
                     || (float) ($this->total_fine ?? 0) > 0,
             ],

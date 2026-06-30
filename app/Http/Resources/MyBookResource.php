@@ -87,7 +87,7 @@ class MyBookResource extends JsonResource
             'actions' => [
                 'can_return' => in_array(
                     (string) ($this->computed_status ?? $this->status),
-                    ['active', 'due_soon', 'overdue'],
+                    ['active', 'due_soon', 'overdue', 'ready_for_return'],
                     true
                 ),
                 'can_pickup' => (string) ($this->computed_status ?? $this->status) === 'awaiting_pickup',

@@ -34,7 +34,8 @@ class MyBookDetailResource extends MyBookResource
             'active' => 'Buku masih dalam masa peminjaman.',
             'due_soon' => 'Buku harus segera dikembalikan.',
             'overdue' => 'Buku sudah melewati batas pengembalian dan berpotensi terkena denda.',
-            'returned' => 'Buku sudah dikembalikan.',
+            'ready_for_return' => 'Denda telah dilunasi. Silakan kembalikan buku ke perpustakaan.',
+            'returned' => 'Peminjaman selesai. Buku sudah dikembalikan.',
             default => 'Status peminjaman sedang diproses.',
         };
     }

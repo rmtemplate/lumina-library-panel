@@ -441,9 +441,10 @@ class BorrowingPaymentService
         // What happens to the borrowing row next depends entirely on WHY
         // this payment existed — see docs/borrowing-lifecycle.md.
         $borrowingStatus = match ($payment->purpose) {
-            // Pre-return overdue fine: clear the block, member still has
-            // the books and needs to actually return them via QR.
-            BorrowingPayment::PURPOSE_OVERDUE_FINE => Borrowing::ACTIVE,
+            // Pre-return overdue fine: fine settled, member now returns books via QR.
+            // READY_FOR_RETURN prevents computeStatus() from re-flagging as overdue
+            // (which happened when we used ACTIVE: due_date still < today).
+            BorrowingPayment::PURPOSE_OVERDUE_FINE => Borrowing::READY_FOR_RETURN,
             // Damage/lost fee discovered at physical return time: the
             // books are already back — this finalizes the loan.
             BorrowingPayment::PURPOSE_RETURN_CONDITION => Borrowing::RETURNED,
