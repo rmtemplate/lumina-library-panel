@@ -23,8 +23,13 @@
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!-- The schema migration is a raw MySQL dump (ENGINE=InnoDB, backticks,
+             SET FOREIGN_KEY_CHECKS) so it can only run on MySQL — tests use a
+             DEDICATED database. Host/user/password come from .env locally and
+             from the CI job env. Create it once locally:
+                 CREATE DATABASE lumina_library_test; -->
+        <env name="DB_CONNECTION" value="mysql"/>
+        <env name="DB_DATABASE" value="lumina_library_test"/>
         <env name="DB_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
