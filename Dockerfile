@@ -13,16 +13,21 @@ WORKDIR /app
 
 COPY composer.json composer.lock ./
 
+# --ignore-platform-reqs: the `composer:2` image doesn't carry gd/intl/redis
+# etc., so transitive ext-* / php-version checks would fail here. The real
+# runtime image (php:8.3-fpm below) DOES have every required extension, so we
+# resolve/download in this stage and let the runtime validate at actual use.
 RUN composer install \
     --no-dev \
     --no-interaction \
     --no-autoloader \
     --no-scripts \
-    --prefer-dist
+    --prefer-dist \
+    --ignore-platform-reqs
 
 COPY . .
 
-RUN composer dump-autoload --optimize --no-dev --classmap-authoritative \
+RUN composer dump-autoload --optimize --no-dev --classmap-authoritative --ignore-platform-reqs \
     && composer run-script post-autoload-dump --no-interaction || true
 
 ##############################################################################

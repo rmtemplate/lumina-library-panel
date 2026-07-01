@@ -14,10 +14,13 @@ name: lumina-library
 # ─────────────────────────────────────────────────────────────────────────
 
 x-app-image: &app-image
+  # Local `docker compose build` tags this; on the server set APP_IMAGE in .env
+  # to the GHCR tag (e.g. ghcr.io/OWNER/lumina-library-app:latest) and use
+  # `docker compose pull` to run the CI-built image instead of building.
   build:
     context: .
     dockerfile: Dockerfile
-  image: lumina-library-app:latest
+  image: ${APP_IMAGE:-lumina-library-app:latest}
   env_file:
     - .env
   depends_on:
@@ -58,7 +61,7 @@ services:
     build:
       context: .
       dockerfile: docker/nginx/Dockerfile
-    image: lumina-library-nginx:latest
+    image: ${NGINX_IMAGE:-lumina-library-nginx:latest}
     container_name: lumina-nginx
     depends_on:
       app:

@@ -41,8 +41,18 @@ else
     git pull --ff-only
 fi
 
-echo "==> Rebuilding images..."
-$COMPOSE build --pull
+# Two modes:
+#   LUMINA_PULL_IMAGES=true  -> pull the CI-built images from GHCR (fast, no
+#                               compiler toolchain needed on the VPS). Requires
+#                               APP_IMAGE/NGINX_IMAGE in .env to point at GHCR.
+#   (default)                -> build the images on the server from source.
+if [ "${LUMINA_PULL_IMAGES:-false}" = "true" ]; then
+    echo "==> Pulling pre-built images from registry..."
+    $COMPOSE pull
+else
+    echo "==> Rebuilding images..."
+    $COMPOSE build --pull
+fi
 
 echo "==> Recreating changed containers (zero-downtime for unchanged services)..."
 $COMPOSE up -d --remove-orphans
