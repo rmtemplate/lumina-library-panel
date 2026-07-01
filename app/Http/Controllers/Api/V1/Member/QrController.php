@@ -36,7 +36,8 @@ class QrController extends ApiController
 
         $result = $this->qrRefreshService->refreshBorrowingPickupQr(
             user: $request->user(),
-            borrowingId: $borrowing
+            borrowingId: $borrowing,
+            force: $request->boolean('force')
         );
 
         return ApiResponse::success(

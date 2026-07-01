@@ -65,7 +65,8 @@ class MyBookController extends ApiController
     {
         $result = $this->myBookService->refreshReturnQr(
             user: $request->user(),
-            borrowingId: $borrowing
+            borrowingId: $borrowing,
+            force: $request->boolean('force')
         );
 
         return ApiResponse::success(

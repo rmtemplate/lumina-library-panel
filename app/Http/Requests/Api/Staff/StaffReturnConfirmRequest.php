@@ -26,6 +26,12 @@ class StaffReturnConfirmRequest extends FormRequest
             ],
             'items.*.notes' => ['nullable', 'string', 'max:500'],
             'staff_notes' => ['nullable', 'string', 'max:1000'],
+
+            // Unlimited staff-added manual charges (Cover Damage, Cleaning Fee, …).
+            'manual_charges' => ['nullable', 'array'],
+            'manual_charges.*.title' => ['required_with:manual_charges', 'string', 'max:120'],
+            'manual_charges.*.description' => ['nullable', 'string', 'max:500'],
+            'manual_charges.*.amount' => ['required_with:manual_charges', 'numeric', 'min:0'],
         ];
     }
 

@@ -1,0 +1,81 @@
+name: CI
+
+# Runs on every PR and every push to main. Two independent checks:
+#   1. Pest test suite (sqlite :memory: — see phpunit.xml, no DB service needed)
+#   2. The production Docker image actually builds (multi-stage, incl. Vite)
+# Deploy (deploy.yml) only fires after THIS workflow succeeds on main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Pest tests (PHP 8.3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: bcmath, exif, gd, intl, pdo_sqlite, sqlite3, zip, redis, pcntl
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-
+
+      - name: Prepare .env
+        run: cp .env.example .env
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Generate app key
+        run: php artisan key:generate
+
+      - name: Run tests
+        run: php artisan test --no-coverage
+
+  docker-build:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build only (no push) — proves the multi-stage Dockerfile (composer +
+      # Vite + PHP-FPM runtime) is valid before we ever try to deploy it.
+      - name: Build application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          tags: lumina-library-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build nginx image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/nginx/Dockerfile
+          push: false
+          load: false
+          tags: lumina-library-nginx:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

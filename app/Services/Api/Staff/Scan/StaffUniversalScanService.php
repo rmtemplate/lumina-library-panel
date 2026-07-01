@@ -69,11 +69,6 @@ class StaffUniversalScanService
     {
         try {
             $result = $this->staffQrScanService->scanBook($staff, ['qr_raw' => $rawQr]);
-
-            return [
-                'type' => QrCodeType::BOOK_INTAKE->value,
-                'data' => $result,
-            ];
         } catch (ValidationException) {
             // Not an error from the staff's point of view — this is the
             // explicit "Book not registered" path the UI offers Register
@@ -83,5 +78,42 @@ class StaffUniversalScanService
                 'data' => ['raw' => $rawQr],
             ];
         }
+
+        // Book resolved — enforce borrow eligibility for the walk-in borrow
+        // flow the Universal Scanner drives. scanBook() itself stays
+        // status-agnostic (it's also used by the plain /staff/qr/book lookup
+        // that legitimately inspects borrowed/damaged copies), so the gate
+        // lives here, not there. can_be_borrowed = available && is_active, so
+        // reserved / borrowed / lost / damaged / maintenance / inactive all
+        // reject with a status-specific message.
+        $bookItem = $result['data']['book_item'] ?? [];
+        $canBorrow = $result['data']['actions']['can_be_borrowed'] ?? false;
+
+        if ($canBorrow !== true) {
+            throw ValidationException::withMessages([
+                'book' => [$this->unavailableMessage((string) ($bookItem['status'] ?? ''), (bool) ($bookItem['is_active'] ?? true))],
+            ]);
+        }
+
+        return [
+            'type' => QrCodeType::BOOK_INTAKE->value,
+            'data' => $result,
+        ];
+    }
+
+    private function unavailableMessage(string $status, bool $isActive): string
+    {
+        if (! $isActive) {
+            return 'Buku ini nonaktif dan tidak dapat dipinjam.';
+        }
+
+        return match ($status) {
+            'reserved' => 'Buku ini sedang direservasi dan tidak dapat dipinjam.',
+            'borrowed' => 'Buku ini sedang dipinjam dan tidak dapat dipinjam.',
+            'lost' => 'Buku ini berstatus hilang dan tidak dapat dipinjam.',
+            'damaged' => 'Buku ini rusak dan tidak dapat dipinjam.',
+            'maintenance' => 'Buku ini sedang dalam perawatan dan tidak dapat dipinjam.',
+            default => 'Buku ini tidak tersedia untuk dipinjam.',
+        };
     }
 }

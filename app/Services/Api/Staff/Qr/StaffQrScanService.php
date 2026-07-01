@@ -319,7 +319,7 @@ class StaffQrScanService
                 ]);
             }
 
-            if (! in_array($borrowing->status, [Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN], true)) {
+            if (! in_array($borrowing->status, [Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN, Borrowing::OVERDUE], true)) {
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini belum aktif atau sudah selesai.'],
                 ]);
@@ -341,6 +341,46 @@ class StaffQrScanService
 
             $overdueDays = $this->fineCalculator->overdueDays($borrowing);
             $feeRules = $this->fineCalculator->feeRules();
+
+            // ── Two-stage return flow ────────────────────────────────────────
+            // Scanning the QR RECEIVES the books. If overdue, we auto-create the
+            // OVERDUE_FINE fines and gate inspection behind that dedicated
+            // payment (WAITING_OVERDUE_PAYMENT). Otherwise the loan goes straight
+            // to BOOK_INSPECTION. Only flip live states so a re-scan is a no-op.
+            if (in_array($borrowing->status, [Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN, Borrowing::OVERDUE], true)) {
+                $overdueAmount = $this->fineCalculator->overdueFineAmount($borrowing);
+
+                if ($overdueAmount > 0) {
+                    $this->createOverdueFines($borrowing, $staff, $overdueDays, $feeRules['fine_per_day']);
+                    $newStatus = Borrowing::WAITING_OVERDUE_PAYMENT;
+                } else {
+                    $newStatus = Borrowing::BOOK_INSPECTION;
+                }
+
+                $borrowing->forceFill([
+                    'status' => $newStatus,
+                    'updated_by' => $staff->id,
+                    'updated_at' => now(),
+                ])->save();
+
+                DB::afterCommit(function () use ($borrowing, $newStatus, $overdueAmount, $overdueDays) {
+                    // Always tell the student their books were received.
+                    \App\Events\Borrowing\BorrowingUpdated::dispatch(
+                        $borrowing->user_id, $borrowing->id, $borrowing->borrowing_code,
+                        'return_received', $newStatus
+                    );
+                    // If overdue, immediately request the separate overdue payment.
+                    if ($newStatus === Borrowing::WAITING_OVERDUE_PAYMENT) {
+                        \App\Events\Borrowing\BorrowingUpdated::dispatch(
+                            $borrowing->user_id, $borrowing->id, $borrowing->borrowing_code,
+                            'overdue_payment_created', $newStatus, 'overdue_fine', 'pending',
+                            ['overdue_days' => $overdueDays, 'overdue_amount' => round($overdueAmount, 2)]
+                        );
+                    }
+                    Log::info('[WS] Broadcast sent: return_received', ['borrowing_id' => $borrowing->id, 'status' => $newStatus]);
+                });
+            }
+
             // Delegates to FineCalculator instead of re-deriving
             // overdueDays * fine_per_day * itemCount inline — see
             // MyBookService::attachComputedFields() for why that pattern
@@ -412,7 +452,37 @@ class StaffQrScanService
     }
 
     /**
-     * Step 2 return flow: staff confirms item conditions and backend finalizes return.
+     * Creates one UNPAID overdue Fine (fine_type=overdue) per active item at
+     * scan time. Keyed on (item, overdue, unpaid) so a re-scan is idempotent.
+     * This is the ONLY place overdue fines are minted in the two-stage flow —
+     * confirmReturn() handles damage/lost/manual only.
+     */
+    private function createOverdueFines(Borrowing $borrowing, User $staff, int $overdueDays, float $finePerDay): void
+    {
+        $branchId = $this->resolveBorrowingBranchId($borrowing);
+        $perItem = $overdueDays * $finePerDay;
+
+        foreach ($this->activeBorrowingItems($borrowing->id) as $item) {
+            Fine::query()->updateOrCreate(
+                ['borrowing_item_id' => $item->id, 'fine_type' => Fine::TYPE_OVERDUE, 'status' => Fine::UNPAID],
+                [
+                    'user_id' => $borrowing->user_id,
+                    'branch_id' => $branchId,
+                    'fine_amount' => $perItem,
+                    'overdue_days' => $overdueDays,
+                    'notes' => "Denda keterlambatan otomatis: {$borrowing->borrowing_code} ({$overdueDays} hari).",
+                    'created_by' => $staff->id,
+                    'updated_by' => $staff->id,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Step 3 return flow: staff inspects book condition + adds manual charges.
+     * Overdue is already settled (or absent) by this point — this stage only
+     * creates DAMAGE_CHARGE fines and gates completion behind their separate
+     * Midtrans payment.
      */
     public function confirmReturn(User $staff, array $payload): array
     {
@@ -446,7 +516,17 @@ class StaffQrScanService
                 ]);
             }
 
-            if (! in_array($borrowing->status, [Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN], true)) {
+            // Two-stage flow: overdue must be settled before inspection.
+            if ($borrowing->status === Borrowing::WAITING_OVERDUE_PAYMENT) {
+                throw ValidationException::withMessages([
+                    'borrowing' => ['Denda keterlambatan belum dibayar. Inspeksi buku belum dapat dilakukan.'],
+                ]);
+            }
+
+            // BOOK_INSPECTION is the normal state (scan set it, or overdue was
+            // paid). ACTIVE/READY_FOR_RETURN/RETURN_PENDING_VERIFICATION remain
+            // valid for the legacy direct scanReturn() path.
+            if (! in_array($borrowing->status, [Borrowing::BOOK_INSPECTION, Borrowing::ACTIVE, Borrowing::READY_FOR_RETURN, Borrowing::RETURN_PENDING_VERIFICATION], true)) {
                 throw ValidationException::withMessages([
                     'borrowing' => ['Transaksi ini belum aktif atau sudah selesai.'],
                 ]);
@@ -507,32 +587,28 @@ class StaffQrScanService
                     'updated_at' => now(),
                 ])->save();
 
-                $overdueAmount = $overdueDays * $feeRules['fine_per_day'];
+                // Overdue is a SEPARATE stage (created at scan) — inspection
+                // only mints damage/lost charges, keyed per (item, fine_type) so
+                // it never collides with the item's overdue fine row.
                 $damageAmount = $this->fineCalculator->damageFeeFor($condition, $feeRules);
                 $lostAmount = $condition === 'lost' ? $feeRules['lost_fee'] : 0.0;
-                $itemFineAmount = $overdueAmount + $damageAmount + $lostAmount;
+                $itemFineAmount = $damageAmount + $lostAmount;
 
-                $totalOverdueAmount += $overdueAmount;
                 $totalDamageAmount += $damageAmount;
                 $totalLostAmount += $lostAmount;
 
                 if ($itemFineAmount > 0) {
-                    $fineType = match (true) {
-                        $lostAmount > 0 => Fine::TYPE_LOST,
-                        $damageAmount > 0 => Fine::TYPE_DAMAGE,
-                        default => Fine::TYPE_OVERDUE,
-                    };
+                    $fineType = $lostAmount > 0 ? Fine::TYPE_LOST : Fine::TYPE_DAMAGE;
 
                     $fineRows[] = Fine::query()->updateOrCreate(
-                        ['borrowing_item_id' => $item->id],
+                        ['borrowing_item_id' => $item->id, 'fine_type' => $fineType],
                         [
                             'user_id' => $borrowing->user_id,
                             'branch_id' => $borrowingBranchId,
                             'fine_amount' => $itemFineAmount,
-                            'overdue_days' => $overdueDays,
+                            'overdue_days' => 0,
                             'status' => Fine::UNPAID,
-                            'fine_type' => $fineType,
-                            'notes' => $this->fineCalculator->fineNote($overdueDays, $overdueAmount, $damageAmount, $lostAmount, $condition),
+                            'notes' => $this->fineCalculator->fineNote(0, 0.0, $damageAmount, $lostAmount, $condition),
                             'created_by' => $staff->id,
                             'updated_by' => $staff->id,
                         ]
@@ -545,19 +621,62 @@ class StaffQrScanService
                     'book_title' => $item->book?->title,
                     'return_condition' => $condition,
                     'status' => $item->status,
-                    'overdue_amount' => $overdueAmount,
                     'damage_amount' => $damageAmount,
                     'lost_amount' => $lostAmount,
                     'fine_amount' => $itemFineAmount,
                 ];
             }
 
-            $totalFine = $totalOverdueAmount + $totalDamageAmount + $totalLostAmount;
-            $paymentRequired = $totalFine > 0;
+            // Staff-added manual charges (Cover Damage, Water Damage, Cleaning
+            // Fee, …). Unlimited; each is a borrowing-level Fine row of type
+            // 'custom' (no borrowing_item_id) carrying its own title/description
+            // so it settles through the SAME payment path as overdue/damage.
+            $totalManualAmount = 0.0;
+            $manualCharges = [];
 
+            foreach (collect($payload['manual_charges'] ?? []) as $charge) {
+                $amount = round((float) ($charge['amount'] ?? 0), 2);
+                $title = trim((string) ($charge['title'] ?? ''));
+
+                if ($amount <= 0 || $title === '') {
+                    continue;
+                }
+
+                $description = trim((string) ($charge['description'] ?? ''));
+
+                $fineRows[] = Fine::query()->create([
+                    'user_id' => $borrowing->user_id,
+                    'branch_id' => $borrowingBranchId,
+                    'borrowing_id' => $borrowing->id,
+                    'borrowing_item_id' => null,
+                    'fine_amount' => $amount,
+                    'overdue_days' => 0,
+                    'status' => Fine::UNPAID,
+                    'fine_type' => Fine::TYPE_CUSTOM,
+                    'title' => $title,
+                    'description' => $description !== '' ? $description : null,
+                    'notes' => $description !== '' ? "{$title}: {$description}" : $title,
+                    'created_by' => $staff->id,
+                    'updated_by' => $staff->id,
+                ]);
+
+                $totalManualAmount += $amount;
+                $manualCharges[] = [
+                    'title' => $title,
+                    'description' => $description !== '' ? $description : null,
+                    'amount' => $amount,
+                ];
+            }
+
+            // DAMAGE stage total only — overdue was its own separate payment.
+            $totalDamageCharges = $totalDamageAmount + $totalLostAmount + $totalManualAmount;
+            $paymentRequired = $totalDamageCharges > 0;
+
+            // Two-stage flow: damage outstanding → its own Midtrans payment;
+            // otherwise the loan is fully COMPLETED.
             $newBorrowingStatus = $paymentRequired
-                ? Borrowing::WAITING_PAYMENT
-                : Borrowing::RETURNED;
+                ? Borrowing::WAITING_DAMAGE_PAYMENT
+                : Borrowing::COMPLETED;
 
             $borrowing->forceFill([
                 'status' => $newBorrowingStatus,
@@ -575,45 +694,45 @@ class StaffQrScanService
                 userId: $staff->id,
                 borrowingId: $borrowing->id,
                 borrowingCode: $borrowing->borrowing_code,
-                fineAmount: $totalFine
+                fineAmount: $totalDamageCharges
             );
 
-            Log::info('[QR][SCAN] Return scan/confirm success', [
+            Log::info('[QR][SCAN] Return inspection confirmed', [
                 'borrowing_id' => $borrowing->id,
                 'qr_id' => $qr->id,
                 'staff_id' => $staff->id,
-                'total_fine' => $totalFine,
+                'damage_total' => $totalDamageCharges,
+                'new_status' => $newBorrowingStatus,
             ]);
-
-            // Payment creation is no longer triggered here — the member
-            // creates it themselves via POST /api/v1/payments/create when
-            // they open the borrowing detail page and see WAITING_PAYMENT
-            // (see App\Services\Api\Payment\BorrowingPaymentService and
-            // docs/payment-flow.md). This keeps payment-method choice in
-            // the member's hands, matching the Core API flow.
 
             $detail = $this->staffBorrowingService->findDetail($staff, $borrowing->id);
 
-            if ($paymentRequired) {
-                DB::afterCommit(function () use ($borrowing, $totalFine, $newBorrowingStatus) {
-                    broadcast(new MyBookStatusUpdated(
-                        userId: $borrowing->user_id,
-                        payload: [
-                            'event' => 'borrowing_waiting_payment',
-                            'borrowing_id' => $borrowing->id,
-                            'borrowing_code' => $borrowing->borrowing_code,
-                            'status' => $newBorrowingStatus,
-                            'payment_required' => true,
-                            'fine_amount' => $totalFine,
-                        ]
-                    ));
-                });
-            } else {
-                DB::afterCommit(function () use ($borrowing) {
-                    \App\Events\Return\ReturnSuccess::dispatch($borrowing->user_id, $borrowing->id, $borrowing->borrowing_code);
-                    Log::info('[WS] Broadcast sent: return.success', ['borrowing_id' => $borrowing->id, 'channel' => 'user.' . $borrowing->user_id]);
-                });
-            }
+            // Unified realtime handoff — damage_payment_created opens the SECOND
+            // (separate) payment sheet on the student; borrowing_completed closes
+            // the loan and sends them back to My Books.
+            $chargeBreakdown = [
+                'damage' => round($totalDamageAmount, 2),
+                'lost' => round($totalLostAmount, 2),
+                'manual' => round($totalManualAmount, 2),
+                'total' => round($totalDamageCharges, 2),
+                'items' => $manualCharges,
+            ];
+
+            DB::afterCommit(function () use ($borrowing, $paymentRequired, $newBorrowingStatus, $totalDamageCharges, $chargeBreakdown) {
+                if ($paymentRequired) {
+                    \App\Events\Borrowing\BorrowingUpdated::dispatch(
+                        $borrowing->user_id, $borrowing->id, $borrowing->borrowing_code,
+                        'damage_payment_created', $newBorrowingStatus, 'damage_charge', 'pending',
+                        ['damage_amount' => round($totalDamageCharges, 2), 'charges' => $chargeBreakdown]
+                    );
+                } else {
+                    \App\Events\Borrowing\BorrowingUpdated::dispatch(
+                        $borrowing->user_id, $borrowing->id, $borrowing->borrowing_code,
+                        'borrowing_completed', Borrowing::COMPLETED
+                    );
+                }
+                Log::info('[WS] Broadcast sent: inspection result', ['borrowing_id' => $borrowing->id, 'payment_required' => $paymentRequired, 'status' => $newBorrowingStatus]);
+            });
 
             return [
                 'borrowing' => $this->summary($detail),
@@ -626,10 +745,11 @@ class StaffQrScanService
                 ],
                 'fine' => $paymentRequired ? [
                     'status' => Fine::UNPAID,
-                    'overdue_amount' => $totalOverdueAmount,
                     'damage_amount' => $totalDamageAmount,
                     'lost_amount' => $totalLostAmount,
-                    'total_amount' => $totalFine,
+                    'manual_amount' => $totalManualAmount,
+                    'manual_charges' => $manualCharges,
+                    'total_amount' => $totalDamageCharges,
                     'items_count' => count($fineRows),
                 ] : null,
                 'items' => $returnedItems,

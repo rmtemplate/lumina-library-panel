@@ -285,16 +285,69 @@ class BorrowingPaymentService
      *
      * @return array{0: string, 1: Collection<Fine>, 2: float}
      */
+    /** Fine types settled by each payment purpose — keeps the two stages separate. */
+    private const OVERDUE_FINE_TYPES = [Fine::TYPE_OVERDUE];
+    private const DAMAGE_FINE_TYPES = [Fine::TYPE_DAMAGE, Fine::TYPE_LOST, Fine::TYPE_CUSTOM];
+
+    /**
+     * Unpaid fines of the given types for a borrowing — covers both item-level
+     * fines (via borrowingItem) and borrowing-level ones (custom charges).
+     *
+     * @return Collection<Fine>
+     */
+    private function finesByType(string $borrowingId, array $types): Collection
+    {
+        return Fine::query()
+            ->where('status', Fine::UNPAID)
+            ->whereIn('fine_type', $types)
+            ->where(function ($q) use ($borrowingId) {
+                $q->whereHas('borrowingItem', fn ($q2) => $q2->where('borrowing_id', $borrowingId))
+                    ->orWhere('borrowing_id', $borrowingId);
+            })
+            ->get();
+    }
+
     private function resolvePendingCharge(Borrowing $borrowing, User $user): array
     {
+        // Two-stage return flow — each stage pays ONLY its own fine types, so
+        // overdue and damage are always separate Midtrans transactions.
+        if ($borrowing->status === Borrowing::WAITING_OVERDUE_PAYMENT) {
+            $overdue = $this->finesByType($borrowing->id, self::OVERDUE_FINE_TYPES);
+            if ($overdue->isNotEmpty()) {
+                return [
+                    BorrowingPayment::PURPOSE_OVERDUE_FINE,
+                    $overdue,
+                    $overdue->sum(fn (Fine $f) => (float) $f->fine_amount),
+                ];
+            }
+        }
+
+        if ($borrowing->status === Borrowing::WAITING_DAMAGE_PAYMENT) {
+            $damage = $this->finesByType($borrowing->id, self::DAMAGE_FINE_TYPES);
+            if ($damage->isNotEmpty()) {
+                return [
+                    BorrowingPayment::PURPOSE_RETURN_CONDITION,
+                    $damage,
+                    $damage->sum(fn (Fine $f) => (float) $f->fine_amount),
+                ];
+            }
+        }
+
         if ($borrowing->status === Borrowing::WAITING_PAYMENT) {
             $existingFines = Fine::query()
                 ->where('status', Fine::UNPAID)
-                ->whereHas('borrowingItem', fn ($q) => $q->where('borrowing_id', $borrowing->id))
+                ->where(function ($q) use ($borrowing) {
+                    // Item-level fines (overdue/damage/lost) AND borrowing-level
+                    // manual charges (fine_type=custom, no borrowing_item_id),
+                    // both created by confirmReturn(). Same dual condition
+                    // markPaid() uses to settle them.
+                    $q->whereHas('borrowingItem', fn ($q2) => $q2->where('borrowing_id', $borrowing->id))
+                        ->orWhere('borrowing_id', $borrowing->id);
+                })
                 ->get();
 
             if ($existingFines->isNotEmpty()) {
-                // Damage/lost fees discovered at physical return time —
+                // Damage/lost/manual fees discovered at physical return time —
                 // confirmReturn() already created these Fine rows.
                 return [
                     BorrowingPayment::PURPOSE_RETURN_CONDITION,
@@ -419,15 +472,26 @@ class BorrowingPaymentService
             'updated_at' => now(),
         ])->save();
 
-        // Mark every UNPAID fine tied to this borrowing as paid — covers
-        // both per-item fines (overdue_fine/return_condition) and the
-        // borrowing-level no-show fine (pickup_no_show).
+        // Settle ONLY the fines this payment is for — so paying the overdue
+        // stage never marks damage fines paid (and vice-versa). Legacy
+        // purposes (return_condition on the old single-payment WAITING_PAYMENT
+        // flow, pickup_no_show) still settle every unpaid fine.
+        $fineTypes = match ($payment->purpose) {
+            BorrowingPayment::PURPOSE_OVERDUE_FINE => self::OVERDUE_FINE_TYPES,
+            BorrowingPayment::PURPOSE_RETURN_CONDITION =>
+                $payment->borrowing?->status === Borrowing::WAITING_DAMAGE_PAYMENT
+                    ? self::DAMAGE_FINE_TYPES
+                    : null,
+            default => null,
+        };
+
         Fine::query()
             ->where(function ($q) use ($payment) {
                 $q->whereHas('borrowingItem', fn ($q2) => $q2->where('borrowing_id', $payment->borrowing_id))
                     ->orWhere('borrowing_id', $payment->borrowing_id);
             })
             ->where('status', Fine::UNPAID)
+            ->when($fineTypes !== null, fn ($q) => $q->whereIn('fine_type', $fineTypes))
             ->get()
             ->each(function (Fine $fine) {
                 $fine->forceFill([
@@ -438,28 +502,33 @@ class BorrowingPaymentService
                 ])->save();
             });
 
-        // What happens to the borrowing row next depends entirely on WHY
-        // this payment existed — see docs/borrowing-lifecycle.md.
-        $borrowingStatus = match ($payment->purpose) {
-            // Pre-return overdue fine: fine settled, member now returns books via QR.
-            // READY_FOR_RETURN prevents computeStatus() from re-flagging as overdue
-            // (which happened when we used ACTIVE: due_date still < today).
-            BorrowingPayment::PURPOSE_OVERDUE_FINE => Borrowing::READY_FOR_RETURN,
-            // Damage/lost fee discovered at physical return time: the
-            // books are already back — this finalizes the loan.
-            BorrowingPayment::PURPOSE_RETURN_CONDITION => Borrowing::RETURNED,
-            // No-show penalty: doesn't touch the (already terminal,
-            // expired) borrowing row at all — just lifts the user-level
-            // checkout block.
-            BorrowingPayment::PURPOSE_PICKUP_NO_SHOW => null,
-            default => null,
+        // What happens to the borrowing row next depends on its CURRENT stage.
+        // The two-stage return flow (waiting_overdue_payment / waiting_damage_
+        // payment) advances the loan; legacy single-payment states keep their
+        // old transitions. See docs/return-flow.md and borrowing-lifecycle.md.
+        $current = Borrowing::query()->find($payment->borrowing_id);
+        $currentStatus = $current?->status;
+
+        [$borrowingStatus, $action] = match (true) {
+            // Two-stage: overdue settled → staff may now inspect the books.
+            $currentStatus === Borrowing::WAITING_OVERDUE_PAYMENT
+                => [Borrowing::BOOK_INSPECTION, 'overdue_payment_paid'],
+            // Two-stage: damage settled → loan fully closed.
+            $currentStatus === Borrowing::WAITING_DAMAGE_PAYMENT
+                => [Borrowing::COMPLETED, 'damage_payment_paid'],
+            // Legacy pre-return overdue fine flow.
+            $currentStatus === Borrowing::WAITING_PAYMENT
+                && $payment->purpose === BorrowingPayment::PURPOSE_OVERDUE_FINE
+                => [Borrowing::READY_FOR_RETURN, null],
+            // Legacy single return-condition payment flow.
+            $currentStatus === Borrowing::WAITING_PAYMENT
+                && $payment->purpose === BorrowingPayment::PURPOSE_RETURN_CONDITION
+                => [Borrowing::RETURNED, null],
+            default => [null, null],
         };
 
-        if ($borrowingStatus !== null) {
-            Borrowing::query()
-                ->where('id', $payment->borrowing_id)
-                ->where('status', Borrowing::WAITING_PAYMENT)
-                ->update(['status' => $borrowingStatus, 'updated_at' => now()]);
+        if ($borrowingStatus !== null && $current !== null) {
+            $current->forceFill(['status' => $borrowingStatus, 'updated_at' => now()])->save();
         }
 
         Log::info('[PAYMENT] Marked paid', [
@@ -469,7 +538,28 @@ class BorrowingPaymentService
             'resulting_borrowing_status' => $borrowingStatus,
         ]);
 
-        $this->paymentBroadcastService->success($payment, $borrowingStatus ?? $payment->borrowing?->status ?? '');
+        $this->paymentBroadcastService->success($payment, $borrowingStatus ?? $currentStatus ?? '');
+
+        // Unified realtime event for the two-stage flow. Overdue-paid tells the
+        // student the loan advanced to inspection; damage-paid closes it, so we
+        // fire both damage_payment_paid AND borrowing_completed.
+        if ($action !== null && $current !== null) {
+            $paymentType = $payment->purpose === BorrowingPayment::PURPOSE_OVERDUE_FINE
+                ? 'overdue_fine' : 'damage_charge';
+            $userId = $current->user_id;
+            $code = $current->borrowing_code;
+
+            DB::afterCommit(function () use ($userId, $payment, $code, $action, $borrowingStatus, $paymentType) {
+                \App\Events\Borrowing\BorrowingUpdated::dispatch(
+                    $userId, $payment->borrowing_id, $code, $action, $borrowingStatus, $paymentType, 'paid'
+                );
+                if ($borrowingStatus === Borrowing::COMPLETED) {
+                    \App\Events\Borrowing\BorrowingUpdated::dispatch(
+                        $userId, $payment->borrowing_id, $code, 'borrowing_completed', Borrowing::COMPLETED
+                    );
+                }
+            });
+        }
     }
 
     private function markExpired(BorrowingPayment $payment, array $midtransData): void
@@ -515,6 +605,10 @@ class BorrowingPaymentService
         };
 
         return $fines->map(function (Fine $fine) use ($borrowing, $label) {
+            // Manual charges carry their own title; item fines use the book.
+            $itemLabel = $fine->fine_type === Fine::TYPE_CUSTOM
+                ? ($fine->title ?: 'Biaya tambahan')
+                : $label;
             $bookTitle = $fine->borrowingItem?->book?->title;
 
             return [
@@ -522,8 +616,8 @@ class BorrowingPaymentService
                 'price' => (int) $fine->fine_amount,
                 'quantity' => 1,
                 'name' => $bookTitle
-                    ? "{$label}: {$bookTitle} ({$borrowing->borrowing_code})"
-                    : "{$label}: {$borrowing->borrowing_code}",
+                    ? "{$itemLabel}: {$bookTitle} ({$borrowing->borrowing_code})"
+                    : "{$itemLabel}: {$borrowing->borrowing_code}",
             ];
         })->values()->all();
     }

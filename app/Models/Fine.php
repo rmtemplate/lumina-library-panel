@@ -21,11 +21,14 @@ class Fine extends Model
     public const TYPE_DAMAGE = 'damage';
     public const TYPE_LOST = 'lost';
     public const TYPE_PICKUP_NO_SHOW = 'pickup_no_show';
+    // Staff-added manual charge at return verification (Cover Damage, Water
+    // Damage, Cleaning Fee, …). Carries its own title/description.
+    public const TYPE_CUSTOM = 'custom';
 
     protected $table = 'fines';
     public $incrementing = false;
     protected $keyType = 'string';
-    protected $fillable = ['user_id', 'branch_id', 'borrowing_id', 'borrowing_item_id', 'fine_amount', 'overdue_days', 'status', 'fine_type', 'paid_at', 'paid_amount', 'waived_reason', 'notes', 'created_by', 'updated_by'];
+    protected $fillable = ['user_id', 'branch_id', 'borrowing_id', 'borrowing_item_id', 'fine_amount', 'overdue_days', 'status', 'fine_type', 'title', 'description', 'paid_at', 'paid_amount', 'waived_reason', 'notes', 'created_by', 'updated_by'];
     protected $casts = ['fine_amount' => 'decimal:2', 'paid_amount' => 'decimal:2', 'paid_at' => 'datetime', 'created_at' => 'datetime', 'updated_at' => 'datetime', 'deleted_at' => 'datetime'];
 
     public function user(): BelongsTo { return $this->belongsTo(User::class, 'user_id'); }

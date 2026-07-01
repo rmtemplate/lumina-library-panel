@@ -7,6 +7,7 @@ use App\Events\Qr\QrGenerated;
 use App\Events\Qr\QrRefreshed;
 use App\Models\Borrowing;
 use App\Models\BorrowingQrCode;
+use App\Models\Fine;
 use App\Models\User;
 use App\Services\Api\Qr\QrImageService;
 use App\Services\Api\Qr\QrPayloadService;
@@ -85,9 +86,14 @@ class MyBookService
         return $borrowing;
     }
 
-    public function refreshReturnQr(User $user, string $borrowingId): array
+    public function refreshReturnQr(User $user, string $borrowingId, bool $force = false): array
     {
-        return DB::transaction(function () use ($user, $borrowingId) {
+        // Self-heal stale legacy state first so an overdue loan (incl. one still
+        // stuck in the old waiting_payment) is always returnable — the Return QR
+        // is never blocked; overdue is charged only after staff scan.
+        $this->overdueService->flagOne($borrowingId);
+
+        return DB::transaction(function () use ($user, $borrowingId, $force) {
             $borrowing = Borrowing::query()
                 ->with($this->borrowingRelations())
                 ->where('id', $borrowingId)
@@ -121,11 +127,6 @@ class MyBookService
                 ]);
             }
 
-            $hadAnyPreviousQr = BorrowingQrCode::query()
-                ->where('borrowing_id', $borrowing->id)
-                ->where('qr_type', QrCodeType::BORROWING_RETURN->value)
-                ->exists();
-
             $previousQr = BorrowingQrCode::query()
                 ->where('borrowing_id', $borrowing->id)
                 ->where('qr_type', QrCodeType::BORROWING_RETURN->value)
@@ -133,6 +134,27 @@ class MyBookService
                 ->lockForUpdate()
                 ->latest('created_at')
                 ->first();
+
+            // ONE active QR per borrowing+type. A still-valid active QR is
+            // returned UNTOUCHED unless the member explicitly tapped Refresh
+            // ($force): no new row, no status change, no broadcast. Rebuilt
+            // from the stored signed payload, so it is byte-identical — this
+            // stops the regenerate-on-rebuild/websocket race that made the
+            // scanner reject the code the member was actually showing.
+            if (! $force && $previousQr && ($previousQr->expires_at === null || $previousQr->expires_at->isFuture())) {
+                Log::info('[QR][REUSE] Returning existing active return QR', [
+                    'borrowing_id' => $borrowing->id,
+                    'qr_id' => $previousQr->id,
+                    'expires_at' => $previousQr->expires_at?->toISOString(),
+                ]);
+
+                return $this->presentReturnQr($borrowing, $previousQr, $computedStatus);
+            }
+
+            $hadAnyPreviousQr = BorrowingQrCode::query()
+                ->where('borrowing_id', $borrowing->id)
+                ->where('qr_type', QrCodeType::BORROWING_RETURN->value)
+                ->exists();
 
             if ($previousQr) {
                 $previousQr->forceFill([
@@ -220,6 +242,43 @@ class MyBookService
         }, 3);
     }
 
+    /**
+     * Builds the standard return-QR { borrowing, qr } response from an EXISTING
+     * QR row without mutating it — the reuse path. Image regenerated from the
+     * stored signed payload (byte-identical); ttl_seconds is the real remaining
+     * time so the client countdown stays truthful.
+     */
+    private function presentReturnQr(Borrowing $borrowing, BorrowingQrCode $qr, string $computedStatus): array
+    {
+        $remaining = $qr->expires_at
+            ? max(0, $qr->expires_at->getTimestamp() - now()->getTimestamp())
+            : 0;
+
+        return [
+            'borrowing' => [
+                'id' => $borrowing->id,
+                'code' => $borrowing->borrowing_code,
+                'status' => $computedStatus,
+                'due_date' => $borrowing->due_date,
+                'days_remaining' => (int) $borrowing->getAttribute('days_remaining'),
+                'overdue_days' => (int) $borrowing->getAttribute('overdue_days'),
+                'fine_per_day' => (float) $borrowing->getAttribute('fine_per_day'),
+                'total_fine' => (float) $borrowing->getAttribute('total_fine'),
+            ],
+            'qr' => [
+                'id' => $qr->id,
+                'code' => $qr->qr_code,
+                'type' => $qr->qr_type,
+                'type_label' => QrCodeType::BORROWING_RETURN->label(),
+                'status' => $qr->status,
+                'expires_at' => $qr->expires_at?->toISOString(),
+                'ttl_seconds' => (int) $remaining,
+                'refresh_count' => (int) $qr->refresh_count,
+                'image' => $this->qrImageService->makeDataUri($qr->payload),
+            ],
+        ];
+    }
+
     private function applyStatusFilter(Builder $query, ?string $status): void
     {
         $today = now()->toDateString();
@@ -276,9 +335,18 @@ class MyBookService
             // transitions to. Without it, total_fine silently drops to 0
             // the instant the borrowing is auto-flagged overdue, because
             // computedStatus is no longer 'overdue'.
-            $totalFine = $this->fineCalculator->isLiveOverdueFineApplicable($borrowing)
-                ? $this->fineCalculator->overdueFineAmount($borrowing)
-                : 0.0;
+            // total_fine must reflect the CURRENT outstanding stage so the app
+            // shows/charges the right amount. In the two-stage flow the fines
+            // are real rows: overdue stage → unpaid overdue fines; damage stage
+            // → unpaid damage/lost/custom fines (overdue already settled). Only
+            // the pre-scan display falls back to the live overdue estimate.
+            $totalFine = match ((string) $borrowing->status) {
+                Borrowing::WAITING_OVERDUE_PAYMENT => $this->unpaidFineSum($borrowing, [Fine::TYPE_OVERDUE]),
+                Borrowing::WAITING_DAMAGE_PAYMENT => $this->unpaidFineSum($borrowing, [Fine::TYPE_DAMAGE, Fine::TYPE_LOST, Fine::TYPE_CUSTOM]),
+                default => $this->fineCalculator->isLiveOverdueFineApplicable($borrowing)
+                    ? $this->fineCalculator->overdueFineAmount($borrowing)
+                    : 0.0,
+            };
 
             $borrowing->setAttribute('computed_status', $computedStatus);
             $borrowing->setAttribute('days_remaining', $daysRemaining);
@@ -287,6 +355,23 @@ class MyBookService
             $borrowing->setAttribute('fine_per_day', $finePerDay);
             $borrowing->setAttribute('return_reminder_days', $reminderDays);
         });
+    }
+
+    /**
+     * Sum of UNPAID fines of the given types for a borrowing — covers both
+     * item-level fines and borrowing-level custom charges. Used so total_fine
+     * matches the stage the borrowing is actually waiting to pay.
+     */
+    private function unpaidFineSum(Borrowing $borrowing, array $types): float
+    {
+        return (float) Fine::query()
+            ->where('status', Fine::UNPAID)
+            ->whereIn('fine_type', $types)
+            ->where(function ($q) use ($borrowing) {
+                $q->whereHas('borrowingItem', fn ($q2) => $q2->where('borrowing_id', $borrowing->id))
+                    ->orWhere('borrowing_id', $borrowing->id);
+            })
+            ->sum('fine_amount');
     }
 
     private function computeStatus(

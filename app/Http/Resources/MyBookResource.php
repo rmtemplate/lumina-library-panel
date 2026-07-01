@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Support\Borrowing\BorrowingWorkflow;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Storage;
@@ -11,6 +12,11 @@ class MyBookResource extends JsonResource
     public function toArray(Request $request): array
     {
         $branch = $this->resolveBranch();
+
+        // Backend is the single source of truth for what the client may do.
+        // Resolved from the REAL borrowing status — never from overdue_days /
+        // total_fine / the display status. See App\Support\Borrowing\BorrowingWorkflow.
+        $flow = BorrowingWorkflow::resolve((string) $this->status);
 
         return [
             'borrowing_id' => $this->id,
@@ -84,13 +90,24 @@ class MyBookResource extends JsonResource
 
             'reservation_expires_at' => $this->reservation_expires_at?->toISOString(),
 
+            // Where the loan is in the return flow + a human label. Distinct
+            // from `status` (what the borrowing IS). The client renders its UI
+            // step from this, not from status/fine heuristics.
+            'workflow' => $flow['workflow'],
+
             'actions' => [
-                'can_return' => in_array(
-                    (string) ($this->computed_status ?? $this->status),
-                    ['active', 'due_soon', 'overdue', 'ready_for_return'],
-                    true
-                ),
-                'can_pickup' => (string) ($this->computed_status ?? $this->status) === 'awaiting_pickup',
+                // Explicit, backend-decided action flags — the client shows a
+                // button ONLY when its flag is true.
+                'can_generate_return_qr' => $flow['actions']['can_generate_return_qr'],
+                'can_refresh_qr' => $flow['actions']['can_refresh_qr'],
+                'can_pay_overdue' => $flow['actions']['can_pay_overdue'],
+                'can_pay_damage' => $flow['actions']['can_pay_damage'],
+                'can_cancel' => $flow['actions']['can_cancel'],
+                'can_view_payment_history' => $flow['actions']['can_view_payment_history'],
+
+                // Legacy flags kept for back-compat with older client builds.
+                'can_return' => $flow['actions']['can_generate_return_qr'],
+                'can_pickup' => (string) $this->status === 'awaiting_pickup',
                 'return_qr_endpoint' => route(
                     'api.v1.my-books.return-qr.refresh',
                     ['borrowing' => $this->id],

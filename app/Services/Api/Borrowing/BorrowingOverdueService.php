@@ -4,6 +4,7 @@ namespace App\Services\Api\Borrowing;
 
 use App\Events\Borrowing\BorrowingOverdue;
 use App\Models\Borrowing;
+use App\Models\BorrowingItem;
 use App\Models\BorrowingPayment;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -29,6 +30,13 @@ class BorrowingOverdueService
 
     public function flagDueOverdueBorrowings(int $limit = 100): int
     {
+        // Self-heal legacy data first: any loan stuck in the OLD pre-return
+        // `waiting_payment` state whose books are still out belongs in the new
+        // two-stage flow as plain OVERDUE (returnable — overdue is only charged
+        // AFTER staff scan). Without this, such loans keep showing a payment
+        // button before the QR is ever scanned.
+        $this->normalizeStaleWaitingPayment($limit);
+
         $borrowingIds = Borrowing::query()
             ->where('status', Borrowing::ACTIVE)
             ->whereNotNull('due_date')
@@ -66,6 +74,21 @@ class BorrowingOverdueService
                 return false;
             }
 
+            // Per-id self-heal for the same stale legacy case as the bulk pass.
+            if ($borrowing->status === Borrowing::WAITING_PAYMENT
+                && $this->booksStillOut($borrowing)) {
+                $borrowing->forceFill([
+                    'status' => Borrowing::OVERDUE,
+                    'updated_at' => now(),
+                ])->save();
+
+                Log::info('[OVERDUE] Normalized stale waiting_payment → overdue', [
+                    'borrowing_id' => $borrowing->id,
+                ]);
+
+                return true;
+            }
+
             if ($borrowing->status !== Borrowing::ACTIVE) {
                 return false;
             }
@@ -99,12 +122,16 @@ class BorrowingOverdueService
                 return false;
             }
 
+            // Two-stage return flow: overdue does NOT force payment before the
+            // books are returned. Flag to OVERDUE (display + still allows the
+            // Return QR) — the overdue fine is only created/charged when staff
+            // scan the Return QR (see StaffQrScanService::previewReturn).
             $borrowing->forceFill([
-                'status' => Borrowing::WAITING_PAYMENT,
+                'status' => Borrowing::OVERDUE,
                 'updated_at' => now(),
             ])->save();
 
-            Log::warning('[OVERDUE] Borrowing flagged as payment-required', [
+            Log::warning('[OVERDUE] Borrowing flagged overdue', [
                 'borrowing_id' => $borrowing->id,
                 'borrowing_code' => $borrowing->borrowing_code,
                 'overdue_days' => $overdueDays,
@@ -122,5 +149,41 @@ class BorrowingOverdueService
 
             return true;
         }, 3);
+    }
+
+    /**
+     * Bulk-normalize legacy `waiting_payment` loans whose books are still out
+     * back to `overdue`. A loan with an active item cannot legitimately be in a
+     * return/damage payment state (the books aren't back), so any such row is a
+     * stale pre-return overdue flag from the old flow — it belongs in `overdue`.
+     */
+    private function normalizeStaleWaitingPayment(int $limit): void
+    {
+        $ids = Borrowing::query()
+            ->where('status', Borrowing::WAITING_PAYMENT)
+            ->whereHas('items', fn ($q) => $q->where('status', BorrowingItem::ACTIVE))
+            ->limit($limit)
+            ->pluck('id');
+
+        if ($ids->isEmpty()) {
+            return;
+        }
+
+        Borrowing::query()->whereIn('id', $ids)->update([
+            'status' => Borrowing::OVERDUE,
+            'updated_at' => now(),
+        ]);
+
+        Log::info('[OVERDUE] Normalized stale waiting_payment → overdue (bulk)', [
+            'count' => $ids->count(),
+        ]);
+    }
+
+    private function booksStillOut(Borrowing $borrowing): bool
+    {
+        return BorrowingItem::query()
+            ->where('borrowing_id', $borrowing->id)
+            ->where('status', BorrowingItem::ACTIVE)
+            ->exists();
     }
 }

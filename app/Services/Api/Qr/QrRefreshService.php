@@ -24,9 +24,9 @@ class QrRefreshService
     ) {
     }
 
-    public function refreshBorrowingPickupQr(User $user, string $borrowingId): array
+    public function refreshBorrowingPickupQr(User $user, string $borrowingId, bool $force = false): array
     {
-        return DB::transaction(function () use ($user, $borrowingId) {
+        return DB::transaction(function () use ($user, $borrowingId, $force) {
             $borrowing = Borrowing::query()
                 ->where('id', $borrowingId)
                 ->where('user_id', $user->id)
@@ -53,11 +53,6 @@ class QrRefreshService
                 ]);
             }
 
-            $hadAnyPreviousQr = BorrowingQrCode::query()
-                ->where('borrowing_id', $borrowing->id)
-                ->where('qr_type', QrCodeType::BORROWING_PICKUP->value)
-                ->exists();
-
             $previousQr = BorrowingQrCode::query()
                 ->where('borrowing_id', $borrowing->id)
                 ->where('qr_type', QrCodeType::BORROWING_PICKUP->value)
@@ -65,6 +60,28 @@ class QrRefreshService
                 ->lockForUpdate()
                 ->latest()
                 ->first();
+
+            // ONE active QR per borrowing+type. A still-valid active QR is
+            // returned UNTOUCHED unless the member explicitly tapped Refresh
+            // ($force): no new row, no status change, no broadcast. This is
+            // what keeps the code the member is showing identical to what the
+            // scanner validates against — the fix for the regenerate-on-every-
+            // rebuild/websocket race. The image is deterministically rebuilt
+            // from the stored signed payload, so it is byte-for-byte the same.
+            if (! $force && $previousQr && ($previousQr->expires_at === null || $previousQr->expires_at->isFuture())) {
+                Log::info('[QR][REUSE] Returning existing active pickup QR', [
+                    'borrowing_id' => $borrowing->id,
+                    'qr_id' => $previousQr->id,
+                    'expires_at' => $previousQr->expires_at?->toISOString(),
+                ]);
+
+                return $this->presentQr($borrowing, $previousQr, QrCodeType::BORROWING_PICKUP);
+            }
+
+            $hadAnyPreviousQr = BorrowingQrCode::query()
+                ->where('borrowing_id', $borrowing->id)
+                ->where('qr_type', QrCodeType::BORROWING_PICKUP->value)
+                ->exists();
 
             if ($previousQr) {
                 $previousQr->forceFill([
@@ -150,6 +167,39 @@ class QrRefreshService
                 ],
             ];
         }, 3);
+    }
+
+    /**
+     * Builds the standard { borrowing, qr } response from an EXISTING QR row
+     * without mutating it — the reuse path. The image is regenerated from the
+     * stored signed payload (byte-identical), and ttl_seconds reflects the
+     * time actually remaining so the client countdown stays truthful.
+     */
+    private function presentQr(Borrowing $borrowing, BorrowingQrCode $qr, QrCodeType $type): array
+    {
+        $remaining = $qr->expires_at
+            ? max(0, $qr->expires_at->getTimestamp() - now()->getTimestamp())
+            : 0;
+
+        return [
+            'borrowing' => [
+                'id' => $borrowing->id,
+                'code' => $borrowing->borrowing_code,
+                'status' => $borrowing->status,
+                'reservation_expires_at' => $borrowing->reservation_expires_at?->toISOString(),
+            ],
+            'qr' => [
+                'id' => $qr->id,
+                'code' => $qr->qr_code,
+                'type' => $qr->qr_type,
+                'type_label' => $type->label(),
+                'status' => $qr->status,
+                'expires_at' => $qr->expires_at?->toISOString(),
+                'refresh_count' => (int) $qr->refresh_count,
+                'ttl_seconds' => (int) $remaining,
+                'image' => $this->qrImageService->makeDataUri($qr->payload),
+            ],
+        ];
     }
 
     private function expireBorrowingAndReleaseStock(Borrowing $borrowing): void
