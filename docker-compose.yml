@@ -8,9 +8,8 @@ name: lumina-library
 # — see docker/php/entrypoint.sh. This keeps the stack modular without
 # duplicating the Dockerfile four times.
 #
-# MySQL is included by default but fully optional — if you point DB_HOST
-# at an already-existing/managed database, comment out the `mysql` service
-# and its `depends_on`/volume entries (see docs/deployment.md).
+# No `mysql` service here — DB_HOST points at `staigo-mysql`, a MySQL
+# container that belongs to a different Compose stack on `staigo-network`.
 # ─────────────────────────────────────────────────────────────────────────
 
 x-app-image: &app-image
@@ -24,12 +23,11 @@ x-app-image: &app-image
   env_file:
     - .env
   depends_on:
-    mysql:
-      condition: service_healthy
     redis:
       condition: service_healthy
   networks:
     - internal
+    - staigo-network  # reach `staigo-mysql`
   volumes:
     - storage_public:/var/www/html/storage/app/public
   restart: unless-stopped
@@ -134,31 +132,6 @@ services:
       start_period: 15s
       retries: 3
 
-  # ── MySQL ──────────────────────────────────────────────────────────────
-  # OPTIONAL — remove this service (and the `mysql_data` volume below) if
-  # DB_HOST in .env already points at an external/managed database.
-  mysql:
-    image: mysql:8.0
-    container_name: apps-lumina-mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${DB_DATABASE}
-      MYSQL_USER: ${DB_USERNAME}
-      MYSQL_PASSWORD: ${DB_PASSWORD}
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./docker/mysql/conf.d:/etc/mysql/conf.d:ro
-    networks:
-      - internal
-    restart: unless-stopped
-    logging: *default-logging
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      start_period: 30s
-      retries: 5
-
   # ── Redis (cache, sessions, queue, Reverb scaling channel) ────────────
   redis:
     image: redis:7-alpine
@@ -188,6 +161,5 @@ networks:
     external: true
 
 volumes:
-  mysql_data:
   redis_data:
   storage_public:
