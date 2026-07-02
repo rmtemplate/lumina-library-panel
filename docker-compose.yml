@@ -43,7 +43,7 @@ services:
   # ── Web (PHP-FPM) ──────────────────────────────────────────────────────
   app:
     <<: *app-image
-    container_name: lumina-app
+    container_name: apps-lumina-app
     environment:
       CONTAINER_ROLE: app
     healthcheck:
@@ -62,16 +62,21 @@ services:
       context: .
       dockerfile: docker/nginx/Dockerfile
     image: ${NGINX_IMAGE:-lumina-library-nginx:latest}
-    container_name: lumina-nginx
+    container_name: apps-lumina-nginx
     depends_on:
       app:
         condition: service_healthy
-    ports:
-      - "${NGINX_HTTP_PORT:-80}:80"
+    # No host port published: Nginx Proxy Manager reaches this container by
+    # name over the shared `staigo-network` (NPM forward host: apps-lumina-nginx,
+    # port 80). Avoids clashing with NPM's own 80/443 on the host.
+    # ponytail: to run WITHOUT NPM, uncomment to expose HTTP directly.
+    # ports:
+    #   - "${NGINX_HTTP_PORT:-80}:80"
     volumes:
       - storage_public:/var/www/html/storage/app/public:ro
     networks:
-      - internal
+      - internal        # reach app (php-fpm) + reverb
+      - staigo-network  # reachable from Nginx Proxy Manager
     restart: unless-stopped
     logging: *default-logging
     healthcheck:
@@ -84,7 +89,7 @@ services:
   # ── Queue worker ───────────────────────────────────────────────────────
   queue:
     <<: *app-image
-    container_name: lumina-queue
+    container_name: apps-lumina-queue
     depends_on:
       app:
         condition: service_healthy
@@ -100,7 +105,7 @@ services:
   # ── Scheduler (replaces VPS crontab — see docker/supervisor/scheduler.conf) ─
   scheduler:
     <<: *app-image
-    container_name: lumina-scheduler
+    container_name: apps-lumina-scheduler
     depends_on:
       app:
         condition: service_healthy
@@ -116,7 +121,7 @@ services:
   # ── Laravel Reverb (WebSocket server) ─────────────────────────────────
   reverb:
     <<: *app-image
-    container_name: lumina-reverb
+    container_name: apps-lumina-reverb
     depends_on:
       app:
         condition: service_healthy
@@ -134,7 +139,7 @@ services:
   # DB_HOST in .env already points at an external/managed database.
   mysql:
     image: mysql:8.0
-    container_name: lumina-mysql
+    container_name: apps-lumina-mysql
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
       MYSQL_DATABASE: ${DB_DATABASE}
@@ -157,7 +162,7 @@ services:
   # ── Redis (cache, sessions, queue, Reverb scaling channel) ────────────
   redis:
     image: redis:7-alpine
-    container_name: lumina-redis
+    container_name: apps-lumina-redis
     command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--requirepass", "${REDIS_PASSWORD}"]
     volumes:
       - redis_data:/data
@@ -174,11 +179,13 @@ services:
       retries: 5
 
 networks:
+  # Private network for app <-> db/redis/reverb. Not reachable from NPM.
   internal:
     driver: bridge
-    # Set `external: true` (and add a matching top-level `name:`) instead
-    # if Nginx Proxy Manager runs as its own Docker Compose stack and needs
-    # to join this same network directly — see docs/deployment.md "SSL".
+  # Shared external network that Nginx Proxy Manager (and rmtemplate-admin)
+  # already live on. Create it once: docker network create staigo-network
+  staigo-network:
+    external: true
 
 volumes:
   mysql_data:
