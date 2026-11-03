@@ -4,6 +4,8 @@
 
 <h1 align="center">Lumina Library Admin</h1>
 
+<p align="center">Case study: <a href="https://rmtemplate.com/explore/lumina-library-admin">rmtemplate.com/explore/lumina-library-admin</a></p>
+
 <p align="center">
   Modern multi-branch library management system built with Laravel, Tailwind CSS, service-layer architecture, and future API/mobile readiness.
 </p>
